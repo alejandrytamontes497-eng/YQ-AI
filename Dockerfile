@@ -41,6 +41,8 @@ RUN pnpm run build
 # -----------------------------------------------------------------------------
 FROM ${GOLANG_IMAGE} AS backend-builder
 
+ENV GOPROXY=https://proxy.golang.org,direct
+
 # Build arguments for version info (set by CI)
 ARG VERSION=
 ARG COMMIT=docker
@@ -90,7 +92,7 @@ FROM ${ALPINE_IMAGE}
 
 # Labels
 LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
-LABEL description="Sub2API - AI API Gateway Platform"
+LABEL description="LARK TECH - AI API Gateway Platform"
 LABEL org.opencontainers.image.source="https://github.com/Wei-Shaw/sub2api"
 
 # Install runtime dependencies
