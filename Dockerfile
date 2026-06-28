@@ -34,7 +34,7 @@ RUN pnpm install --frozen-lockfile --prod=false --network-concurrency 1
 # Copy only that subtree to keep the build dependency minimal.
 COPY frontend/ ./
 COPY docs/legal/ /app/docs/legal/
-ENV NODE_OPTIONS=--max-old-space-size=384
+ENV NODE_OPTIONS=--max-old-space-size=2048
 RUN pnpm run build
 
 # -----------------------------------------------------------------------------
