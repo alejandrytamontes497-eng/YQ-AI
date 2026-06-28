@@ -25,7 +25,7 @@ RUN corepack enable && corepack prepare pnpm@9 --activate
 
 # Install dependencies first (better caching)
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile --network-concurrency 1
 
 # Copy frontend source and build.
 # LegalDocumentView.vue (admin-compliance gate) build-time imports
@@ -34,8 +34,8 @@ RUN pnpm install --frozen-lockfile
 # Copy only that subtree to keep the build dependency minimal.
 COPY frontend/ ./
 COPY docs/legal/ /app/docs/legal/
-ENV NODE_OPTIONS=--max-old-space-size=256
-RUN pnpm run build
+ENV NODE_OPTIONS=--max-old-space-size=384
+RUN vite build
 
 # -----------------------------------------------------------------------------
 # Stage 2: Backend Builder
