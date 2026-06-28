@@ -673,6 +673,15 @@
                 {{ t('admin.users.groups') }}
               </button>
 
+              <!-- Reset Password -->
+              <button
+                @click="handleResetPassword(user); closeActionMenu()"
+                class="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
+              >
+                <Icon name="lock" size="sm" class="text-gray-400" :stroke-width="2" />
+                重置密码
+              </button>
+
               <div class="my-1 border-t border-gray-100 dark:border-dark-700"></div>
 
               <!-- Deposit -->
@@ -722,7 +731,7 @@
                 class="flex w-full items-center gap-2 px-4 py-2 text-sm text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
               >
                 <Icon name="trash" size="sm" :stroke-width="2" />
-                {{ t('common.delete') }}
+                删除账号
               </button>
             </template>
           </template>
@@ -731,6 +740,51 @@
     </Teleport>
 
     <ConfirmDialog :show="showDeleteDialog" :title="t('admin.users.deleteUser')" :message="t('admin.users.deleteConfirm', { email: deletingUser?.email })" :danger="true" @confirm="confirmDelete" @cancel="showDeleteDialog = false" />
+    <BaseDialog
+      :show="showResetPasswordDialog"
+      title="重置密码"
+      width="narrow"
+      @close="closeResetPasswordDialog"
+    >
+      <form class="space-y-4" @submit.prevent="confirmResetPassword">
+        <div>
+          <p class="mb-3 text-sm text-gray-600 dark:text-dark-300">
+            正在为 <span class="font-medium text-gray-900 dark:text-white">{{ resetPasswordUser?.email }}</span> 设置新密码。
+          </p>
+          <label class="input-label">新密码</label>
+          <input
+            v-model="resetPasswordForm.password"
+            type="text"
+            class="input"
+            autocomplete="new-password"
+            placeholder="请输入至少 6 位新密码"
+          />
+        </div>
+        <div>
+          <label class="input-label">确认新密码</label>
+          <input
+            v-model="resetPasswordForm.confirmPassword"
+            type="text"
+            class="input"
+            autocomplete="new-password"
+            placeholder="请再次输入新密码"
+          />
+        </div>
+      </form>
+      <template #footer>
+        <button type="button" class="btn btn-secondary" @click="closeResetPasswordDialog">
+          {{ t('common.cancel') }}
+        </button>
+        <button
+          type="button"
+          class="btn btn-primary"
+          :disabled="resettingPassword"
+          @click="confirmResetPassword"
+        >
+          {{ resettingPassword ? '保存中...' : '确认重置' }}
+        </button>
+      </template>
+    </BaseDialog>
     <UserCreateModal :show="showCreateModal" @close="showCreateModal = false" @success="loadUsers" />
     <UserEditModal :show="showEditModal" :user="editingUser" @close="closeEditModal" @success="loadUsers" />
     <UserPlatformQuotaModal
@@ -767,6 +821,7 @@ import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
@@ -1273,11 +1328,15 @@ const pagination = reactive({
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
 const showDeleteDialog = ref(false)
+const showResetPasswordDialog = ref(false)
 const showApiKeysModal = ref(false)
 const showAttributesModal = ref(false)
 const showPlatformQuotaModal = ref(false)
 const editingUser = ref<AdminUser | null>(null)
 const deletingUser = ref<AdminUser | null>(null)
+const resetPasswordUser = ref<AdminUser | null>(null)
+const resettingPassword = ref(false)
+const resetPasswordForm = reactive({ password: '', confirmPassword: '' })
 const viewingUser = ref<AdminUser | null>(null)
 const platformQuotaUser = ref<AdminUser | null>(null)
 
@@ -1393,7 +1452,7 @@ const openActionMenu = (user: AdminUser, e: MouseEvent) => {
 
     const rect = target.getBoundingClientRect()
     const menuWidth = 200
-    const menuHeight = 240
+    const menuHeight = 280
     const padding = 8
     const viewportWidth = window.innerWidth
     const viewportHeight = window.innerHeight
@@ -1714,6 +1773,50 @@ const closeGroupReplaceModal = () => {
 const handleDelete = (user: AdminUser) => {
   deletingUser.value = user
   showDeleteDialog.value = true
+}
+
+const handleResetPassword = (user: AdminUser) => {
+  resetPasswordUser.value = user
+  resetPasswordForm.password = ''
+  resetPasswordForm.confirmPassword = ''
+  showResetPasswordDialog.value = true
+}
+
+const closeResetPasswordDialog = () => {
+  if (resettingPassword.value) return
+  showResetPasswordDialog.value = false
+  resetPasswordUser.value = null
+  resetPasswordForm.password = ''
+  resetPasswordForm.confirmPassword = ''
+}
+
+const confirmResetPassword = async () => {
+  if (!resetPasswordUser.value || resettingPassword.value) return
+
+  const password = resetPasswordForm.password.trim()
+  const confirmPassword = resetPasswordForm.confirmPassword.trim()
+  if (password.length < 6) {
+    appStore.showError('新密码至少需要 6 位')
+    return
+  }
+  if (password !== confirmPassword) {
+    appStore.showError('两次输入的新密码不一致')
+    return
+  }
+
+  resettingPassword.value = true
+  try {
+    await adminAPI.users.update(resetPasswordUser.value.id, { password })
+    appStore.showSuccess('密码已重置')
+    resettingPassword.value = false
+    closeResetPasswordDialog()
+  } catch (error: any) {
+    appStore.showError(error.response?.data?.detail || t('admin.users.failedToUpdate'))
+    console.error('Error resetting user password:', error)
+    resettingPassword.value = false
+  } finally {
+    resettingPassword.value = false
+  }
 }
 
 const confirmDelete = async () => {
