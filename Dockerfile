@@ -35,7 +35,7 @@ RUN pnpm install --frozen-lockfile --network-concurrency 1
 COPY frontend/ ./
 COPY docs/legal/ /app/docs/legal/
 ENV NODE_OPTIONS=--max-old-space-size=384
-RUN vite build
+RUN pnpm run build
 
 # -----------------------------------------------------------------------------
 # Stage 2: Backend Builder
