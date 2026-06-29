@@ -67,7 +67,15 @@
             </button>
           </div>
           <div class="mt-1 flex items-center justify-between">
-            <span></span>
+            <label class="inline-flex items-center gap-2 text-sm text-gray-500 dark:text-dark-400">
+              <input
+                v-model="rememberPassword"
+                type="checkbox"
+                :disabled="authActionDisabled"
+                class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-600"
+              />
+              <span>记住密码</span>
+            </label>
             <router-link
               v-if="passwordResetEnabled && !backendModeEnabled"
               to="/forgot-password"
@@ -75,6 +83,38 @@
             >
               {{ t('auth.forgotPassword') }}
             </router-link>
+          </div>
+        </div>
+
+        <!-- Dynamic Captcha -->
+        <div>
+          <label for="captcha" class="input-label">动态验证码</label>
+          <div class="flex gap-3">
+            <div class="relative min-w-0 flex-1">
+              <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
+                <Icon name="shield" size="md" class="text-gray-400 dark:text-dark-500" />
+              </div>
+              <input
+                id="captcha"
+                v-model="formData.captcha"
+                type="text"
+                required
+                autocomplete="off"
+                :disabled="authActionDisabled"
+                class="input pl-11"
+                :class="{ 'input-error': errors.captcha }"
+                placeholder="请输入验证码"
+              />
+            </div>
+            <button
+              type="button"
+              :disabled="authActionDisabled"
+              class="flex h-11 min-w-[112px] select-none items-center justify-center rounded-lg border border-gray-200 bg-gray-50 px-4 font-mono text-lg font-bold tracking-[0.25em] text-gray-800 transition hover:border-primary-300 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-100"
+              title="刷新验证码"
+              @click="() => refreshCaptcha()"
+            >
+              {{ captchaCode }}
+            </button>
           </div>
         </div>
 
@@ -219,6 +259,7 @@ import { clearAllAffiliateReferralCodes } from '@/utils/oauthAffiliate'
 
 const { t } = useI18n()
 const LOGIN_AGREEMENT_STORAGE_KEY = 'sub2api_login_agreement_consent'
+const REMEMBER_PASSWORD_STORAGE_KEY = 'sub2api_remembered_login'
 
 // ==================== Router & Stores ====================
 
@@ -232,6 +273,8 @@ const isLoading = ref<boolean>(false)
 const errorMessage = ref<string>('')
 const showPassword = ref<boolean>(false)
 const publicSettingsLoaded = ref<boolean>(false)
+const rememberPassword = ref<boolean>(false)
+const captchaCode = ref<string>('')
 
 // Public settings
 const turnstileEnabled = ref<boolean>(false)
@@ -265,17 +308,19 @@ const totpModalRef = ref<InstanceType<typeof TotpLoginModal> | null>(null)
 
 const formData = reactive({
   email: '',
-  password: ''
+  password: '',
+  captcha: ''
 })
 
 const errors = reactive({
   email: '',
   password: '',
+  captcha: '',
   turnstile: ''
 })
 
 const validationToastMessage = computed(
-  () => errors.email || errors.password || errors.turnstile || ''
+  () => errors.email || errors.password || errors.captcha || errors.turnstile || ''
 )
 
 const agreementGateActive = computed(
@@ -306,6 +351,9 @@ watch(validationToastMessage, (value, previousValue) => {
 // ==================== Lifecycle ====================
 
 onMounted(async () => {
+  loadRememberedLogin()
+  refreshCaptcha()
+
   const expiredFlag = sessionStorage.getItem('auth_expired')
   if (expiredFlag) {
     sessionStorage.removeItem('auth_expired')
@@ -419,10 +467,51 @@ function onTurnstileError(): void {
 
 // ==================== Validation ====================
 
+function generateCaptchaCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  return Array.from({ length: 4 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
+}
+
+function refreshCaptcha(clearError = true): void {
+  captchaCode.value = generateCaptchaCode()
+  formData.captcha = ''
+  if (clearError) {
+    errors.captcha = ''
+  }
+}
+
+function loadRememberedLogin(): void {
+  try {
+    const raw = localStorage.getItem(REMEMBER_PASSWORD_STORAGE_KEY)
+    if (!raw) return
+    const saved = JSON.parse(raw) as { email?: string; password?: string }
+    formData.email = saved.email || ''
+    formData.password = saved.password || ''
+    rememberPassword.value = Boolean(saved.email || saved.password)
+  } catch {
+    localStorage.removeItem(REMEMBER_PASSWORD_STORAGE_KEY)
+  }
+}
+
+function persistRememberedLogin(): void {
+  if (!rememberPassword.value) {
+    localStorage.removeItem(REMEMBER_PASSWORD_STORAGE_KEY)
+    return
+  }
+  localStorage.setItem(
+    REMEMBER_PASSWORD_STORAGE_KEY,
+    JSON.stringify({
+      email: formData.email,
+      password: formData.password
+    })
+  )
+}
+
 function validateForm(): boolean {
   // Reset errors
   errors.email = ''
   errors.password = ''
+  errors.captcha = ''
   errors.turnstile = ''
 
   let isValid = true
@@ -450,6 +539,15 @@ function validateForm(): boolean {
     isValid = false
   } else if (formData.password.length < 6) {
     errors.password = t('auth.passwordMinLength')
+    isValid = false
+  }
+
+  if (!formData.captcha.trim()) {
+    errors.captcha = '请输入验证码'
+    isValid = false
+  } else if (formData.captcha.trim().toUpperCase() !== captchaCode.value) {
+    errors.captcha = '验证码错误，请重新输入'
+    refreshCaptcha(false)
     isValid = false
   }
 
@@ -494,6 +592,7 @@ async function handleLogin(): Promise<void> {
     }
 
     // Show success toast
+    persistRememberedLogin()
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
 
@@ -506,6 +605,7 @@ async function handleLogin(): Promise<void> {
       turnstileRef.value.reset()
       turnstileToken.value = ''
     }
+    refreshCaptcha()
 
     errorMessage.value = extractI18nErrorMessage(error, t, 'auth.errors', t('auth.loginFailed'))
 
@@ -528,6 +628,7 @@ async function handle2FAVerify(code: string): Promise<void> {
 
     // Close modal and show success
     show2FAModal.value = false
+    persistRememberedLogin()
     clearAllAffiliateReferralCodes()
     appStore.showSuccess(t('auth.loginSuccess'))
 

@@ -109,6 +109,72 @@ var contentModerationCategoryOrder = []string{
 	"violence/graphic",
 }
 
+var defaultContentModerationBlockedKeywords = []string{
+	"暴恐",
+	"恐怖主义",
+	"极端主义",
+	"非法集资",
+	"洗钱",
+	"赌博",
+	"网赌",
+	"赌球",
+	"博彩",
+	"诈骗",
+	"电信诈骗",
+	"跑分",
+	"代收款",
+	"非法贷款",
+	"套现",
+	"毒品",
+	"贩毒",
+	"吸毒",
+	"制毒",
+	"枪支",
+	"弹药",
+	"爆炸物",
+	"管制刀具",
+	"人肉搜索",
+	"开盒",
+	"身份证号",
+	"银行卡号",
+	"验证码",
+	"账号密码",
+	"未成年人色情",
+	"儿童色情",
+	"裸聊",
+	"色情服务",
+	"卖淫",
+	"嫖娼",
+	"自杀方法",
+	"自残教程",
+	"仇恨言论",
+	"种族歧视",
+	"民族歧视",
+	"宗教歧视",
+	"木马",
+	"病毒源码",
+	"撞库",
+	"脱库",
+	"盗号",
+	"黑产",
+	"暗网",
+	"terrorism",
+	"extremism",
+	"money laundering",
+	"phishing",
+	"carding",
+	"credential stuffing",
+	"malware",
+	"ransomware",
+	"botnet",
+	"ddos",
+	"doxxing",
+	"child sexual abuse",
+	"child pornography",
+	"suicide method",
+	"self harm instructions",
+}
+
 func ContentModerationDefaultThresholds() map[string]float64 {
 	return map[string]float64{
 		"harassment":             0.98,
@@ -130,6 +196,12 @@ func ContentModerationDefaultThresholds() map[string]float64 {
 func ContentModerationCategories() []string {
 	out := make([]string, len(contentModerationCategoryOrder))
 	copy(out, contentModerationCategoryOrder)
+	return out
+}
+
+func DefaultContentModerationBlockedKeywords() []string {
+	out := make([]string, len(defaultContentModerationBlockedKeywords))
+	copy(out, defaultContentModerationBlockedKeywords)
 	return out
 }
 
@@ -1843,7 +1915,7 @@ func defaultContentModerationConfig() *ContentModerationConfig {
 		HitRetentionDays:     defaultContentModerationHitRetentionDays,
 		NonHitRetentionDays:  defaultContentModerationNonHitRetentionDays,
 		PreHashCheckEnabled:  false,
-		BlockedKeywords:      []string{},
+		BlockedKeywords:      DefaultContentModerationBlockedKeywords(),
 		KeywordBlockingMode:  ContentModerationKeywordModeKeywordAndAPI,
 		ModelFilter: ContentModerationModelFilter{
 			Type:   ContentModerationModelFilterAll,
@@ -1944,8 +2016,12 @@ func (cfg *ContentModerationConfig) normalize() {
 	}
 	cfg.GroupIDs = normalizeInt64IDs(cfg.GroupIDs)
 	cfg.Thresholds = mergeContentModerationThresholds(ContentModerationDefaultThresholds(), cfg.Thresholds)
-	cfg.BlockedKeywords = normalizeBlockedKeywords(cfg.BlockedKeywords)
 	cfg.KeywordBlockingMode = normalizeKeywordBlockingMode(cfg.KeywordBlockingMode)
+	if cfg.KeywordBlockingMode == ContentModerationKeywordModeAPIOnly {
+		cfg.BlockedKeywords = normalizeBlockedKeywords(cfg.BlockedKeywords)
+	} else {
+		cfg.BlockedKeywords = normalizeBlockedKeywordsWithDefaults(cfg.BlockedKeywords)
+	}
 	cfg.ModelFilter = normalizeContentModerationModelFilter(cfg.ModelFilter)
 }
 
@@ -2504,6 +2580,13 @@ func normalizeBlockedKeywords(in []string) []string {
 		}
 	}
 	return out
+}
+
+func normalizeBlockedKeywordsWithDefaults(in []string) []string {
+	merged := make([]string, 0, len(defaultContentModerationBlockedKeywords)+len(in))
+	merged = append(merged, defaultContentModerationBlockedKeywords...)
+	merged = append(merged, in...)
+	return normalizeBlockedKeywords(merged)
 }
 
 func normalizeKeywordBlockingMode(mode string) string {

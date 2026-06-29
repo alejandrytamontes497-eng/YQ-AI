@@ -45,10 +45,8 @@ function updateFavicon(logoUrl: string) {
 // Watch for site settings changes and update favicon/title
 watch(
   () => appStore.siteLogo,
-  (newLogo) => {
-    if (newLogo) {
-      updateFavicon(newLogo)
-    }
+  () => {
+    updateFavicon('/logo.png')
   },
   { immediate: true }
 )

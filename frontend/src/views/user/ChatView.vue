@@ -99,17 +99,14 @@
               v-if="modelOptions.length > 0"
               v-model="selectedModel"
               :options="modelOptions"
-              :disabled="sending"
-              searchable
-              creatable
-              creatable-prefix="使用模型"
+              disabled
               placeholder="选择或输入模型"
               @change="onModelSelect"
             />
             <Input
               v-else
               v-model="selectedModel"
-              :disabled="sending"
+              disabled
               placeholder="输入模型名称"
             />
 

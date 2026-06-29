@@ -426,6 +426,15 @@ func TestNormalizeBlockedKeywords_TrimsDedupesAndCaps(t *testing.T) {
 	require.Equal(t, []string{"foo", "bar", "baz"}, out)
 }
 
+func TestDefaultContentModerationBlockedKeywords_ReturnsCopy(t *testing.T) {
+	first := DefaultContentModerationBlockedKeywords()
+	require.Contains(t, first, "暴恐")
+	require.Contains(t, first, "phishing")
+
+	first[0] = "changed"
+	require.NotEqual(t, first[0], DefaultContentModerationBlockedKeywords()[0])
+}
+
 func TestMatchBlockedKeyword_CaseInsensitiveSubstring(t *testing.T) {
 	keyword, hit := matchBlockedKeyword("Please ignore the BadWord here", []string{"badword"})
 	require.True(t, hit)
@@ -484,6 +493,53 @@ func TestContentModerationCheck_PreBlockKeywordHitSkipsUpstreamCall(t *testing.T
 	logs := requireContentModerationLogCount(t, repo, 1)
 	require.True(t, logs[0].Flagged)
 	require.Equal(t, ContentModerationActionKeywordBlock, logs[0].Action)
+	require.Equal(t, contentModerationKeywordCategory, logs[0].HighestCategory)
+}
+
+func TestContentModerationCheck_PreBlockUsesBuiltinKeywordsWhenConfigListEmpty(t *testing.T) {
+	upstreamCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+		_ = json.NewEncoder(w).Encode(moderationAPIResponse{Results: []moderationAPIResult{{}}})
+	}))
+	defer server.Close()
+
+	cfg := defaultContentModerationConfig()
+	cfg.Enabled = true
+	cfg.Mode = ContentModerationModePreBlock
+	cfg.BaseURL = server.URL
+	cfg.APIKeys = []string{"sk-test"}
+	cfg.BlockedKeywords = []string{}
+	rawCfg, err := json.Marshal(cfg)
+	require.NoError(t, err)
+
+	repo := &contentModerationTestRepo{}
+	svc := NewContentModerationService(
+		&contentModerationTestSettingRepo{values: map[string]string{
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: string(rawCfg),
+		}},
+		repo,
+		&contentModerationTestHashCache{},
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	body := []byte(`{"messages":[{"role":"user","content":"请生成暴恐相关内容"}]}`)
+	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		Endpoint: "/v1/chat/completions",
+		Provider: "openai",
+		Protocol: ContentModerationProtocolOpenAIChat,
+		Body:     body,
+	})
+
+	require.NoError(t, err)
+	require.True(t, decision.Blocked)
+	require.Equal(t, ContentModerationActionKeywordBlock, decision.Action)
+	require.False(t, upstreamCalled, "built-in keyword block must short-circuit upstream moderation call")
+	logs := requireContentModerationLogCount(t, repo, 1)
 	require.Equal(t, contentModerationKeywordCategory, logs[0].HighestCategory)
 }
 
