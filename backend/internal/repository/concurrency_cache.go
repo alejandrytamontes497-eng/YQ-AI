@@ -5,62 +5,45 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/redis/go-redis/v9"
 )
 
-// 并发控制缓存常量定义
-//
-// 性能优化说明：
-// 原实现使用 SCAN 命令遍历独立的槽位键（concurrency:account:{id}:{requestID}），
-// 在高并发场景下 SCAN 需要多次往返，且遍历大量键时性能下降明显。
-//
-// 新实现改用 Redis 有序集合（Sorted Set）：
-// 1. 每个账号/用户只有一个键，成员为 requestID，分数为时间戳
-// 2. 使用 ZCARD 原子获取并发数，时间复杂度 O(1)
-// 3. 使用 ZREMRANGEBYSCORE 清理过期槽位，避免手动管理 TTL
-// 4. 单次 Redis 调用完成计数，减少网络往返
+// 濡ょ姷鍋犲▔娑溿亹閸岀偛绠崇憸宥夊春濡ゅ啰纾介柟鎯х－閹界娀鎮介娑欏€愰柛锝堟閳ь剝顫夐惌顔剧不?//
+// 闂佽鍎搁崱妤€骞嬫繛鏉戝悑閿氶悗浣冨皺閹风姷鈧稒蓱椤牠鏌?// 闂佸憡顭囬崰搴ㄦ偪閸曨垱鍋濆Λ棰佺閳诲繘鏌?SCAN 闂佸憡绋掗崹婵嬪箮閵堝鐒肩€广儱鎳庨崸濠囨煟濞嗘ê澧伴柣婵囩洴閹啴宕熼顐亝閹峰懎顓兼径瀣闂佹寧绋戝寮宯currency:account:{id}:{requestID}闂佹寧绋戦¨鈧紒?// 闂侀潻璐熼崝鎴︽偟椤曗偓閻涱喚鎹勯崫鍕矝闂侀潻濡囬崕銈呪枍濞嗘劗鈻?SCAN 闂傚倸娲犻崑鎾绘偡閺囨氨顦︽い锕€鐏濋埢搴ㄥ灳瀹曞洨鐛㈤柡澶嗘櫆濡垹妲愬┑鍥┾枖闁哄啫鐗呴幉楣冩煕濡儤顥滈柕鍥ф喘閺屽矁绠涘☉娆愭闂佸搫鍟抽崺鏍焵椤戭剙妫楅崢鏉戔槈閹炬剚鍎旀俊鍓у厴瀵増鎯旈姀鈾€鏋栭梺?//
+// 闂佸搫鍊瑰姗€鎮块崟顖涘仢闁绘鐗婇弳顓㈡煟?Redis 闂佸搫鐗嗛ˇ顖滆姳椤撱垺鈷栭柛鈩冾殕閸娿倝鏌ㄥ☉妯绘睘orted Set闂佹寧绋戦¨鈧紒?// 1. 濠殿噯绲界换瀣煂濠婂懏瀚婚柨鏇楀亾鐟?闂佹椿娼块崝宥夊春濞戙垹鐭楁い蹇撴噺缁犳帒鈽夐幘顖氫壕婵炴垶鎼╂禍顏堝极椤撱垺鏅悘鐐村劤閻忓洭鏌涘☉娅偐鎷?requestID闂佹寧绋戦懟顖炲垂鎼淬劌鏋佸Λ棰佹祰缁€瀣煛閸愩劎鍩ｆ俊顐㈡健楠?// 2. 婵炶揪缍€濞夋洟寮?ZCARD 闂佸憡顭囬崰搴ㄦ偤濞嗘挻鍤旂€瑰嫭婢樼徊鎸庮殽閻愯埖纭剧憸鏉垮€垮顐ゆ暜椤斿墽顦梺鍝勫暙閻栫厧螞閹稿骸绶炵€广儱妫欑徊浠嬪箹?O(1)
+// 3. 婵炶揪缍€濞夋洟寮?ZREMRANGEBYSCORE 濠电偞鎸搁幊鎰板箖婵犲啯浜ら柛銉ｅ妽閸╁倹淇婇崣澶婄亰缂傚秴鎳橀弫宥呯暆閸曨亞绱氶梺绋跨箰缁夊灚鏅跺鍫濈闁靛ě灞芥倎闂?TTL
+// 4. Single Redis calls keep the hot path compact.
 const (
-	// 并发槽位键前缀（有序集合）
-	// 格式: concurrency:account:{accountID}
+	// 濡ょ姷鍋犲▔娑溿亹閸屾锝夊箣閹烘梻孝闂備焦顑欓崰鏍ㄦ櫠閻樼數纾介柍褜鍓熼弫宥夊醇閻斿摜鐣抽柟鍏兼綑缁绘ê鈻旈敃鍌氳Е闁割偒鍓涚粈?	// 闂佸搫绉堕崢褏妲? concurrency:account:{accountID}
 	accountSlotKeyPrefix = "concurrency:account:"
-	// 格式: concurrency:user:{userID}
+	// 闂佸搫绉堕崢褏妲? concurrency:user:{userID}
 	userSlotKeyPrefix = "concurrency:user:"
-	// 等待队列计数器格式: concurrency:wait:{userID}
+	// 缂備焦绋戦ˇ顖滄閻斿吋鈷撻柣鏂垮槻閻忔瑩鎮规担鎻掑⒉闁哄棛鍠栧畷鎶藉Ω閿旀儳顥曢悗? concurrency:wait:{userID}
 	waitQueueKeyPrefix = "concurrency:wait:"
-	// 账号级等待队列计数器格式: wait:account:{accountID}
+	// 闁荤姵鍔х粻鎴ｃ亹鐠恒劎妫憸蹇涙偤閹存繍鍤楅柛娑樼摠琚濋梺鍛婂笚椤ㄥ顢橀幖浣告瀬闁哄瀵ч悵銈夋煛瀹ュ洤甯剁紒? wait:account:{accountID}
 	accountWaitKeyPrefix = "wait:account:"
 
-	// 默认槽位过期时间（分钟），可通过配置覆盖
+	// 婵帗绋掗…鍫ヮ敇鐠囧弬锝夊箣閹烘梻孝闁哄鏅涘ú锕€锕㈤敓鐘茬睄闁割偅娲橀敍鐔兼煥濞戞澧曢柛銊ラ叄閺岋箓鎮ら崒婊咁槴闂佹寧绋戦懟顖濄亹閺屻儲鐒绘慨妯虹－缁犳牠姊洪弶璺ㄐら柣銈呮閹蹭即宕卞▎鎰紣
 	defaultSlotTTLMinutes = 15
 )
 
 var (
-	// acquireScript 使用有序集合计数并在未达上限时添加槽位
-	// 使用 Redis TIME 命令获取服务器时间，避免多实例时钟不同步问题
-	// KEYS[1] = 有序集合键 (concurrency:account:{id} / concurrency:user:{id})
+	// acquireScript 婵炶揪缍€濞夋洟寮妶澶婂珘濠㈣泛锕︾喊宥夋⒒閸℃顥滈柟顔兼捣閹峰鍩勯崘鈺傤啀濡ょ姷鍋犲▔娑橈耿椤忓牆瀚夋い蹇撴处瑜把冣槈閹剧韬俊鐐そ瀵噣鎳滈棃娑欑秹闂佸憡姊绘慨浣冩綍婵?	// 婵炶揪缍€濞夋洟寮?Redis TIME 闂佸憡绋掗崹婵嬪箮閵堝鍤旂€瑰嫭婢樼徊鍧楁煛閸繄孝濠殿喚鍠栧畷鎶藉Ω閿旂瓔妲梻鍌氬€介幓顏嗘濠靛鐒奸柛顭戝枛鐢啿顭块懜浣冨闁汇倕瀚粭鐔衡偓锝庡亝椤ρ囨⒑閻ｅ苯鏋嶇紒妤€顦靛畷銉т沪缂併垹濡遍梻鍌氬亞閸ｏ綁銆?	// KEYS[1] = 闂佸搫鐗嗛ˇ顖滆姳椤撱垺鈷栭柛鈩冾殕閸娿倝姊?(concurrency:account:{id} / concurrency:user:{id})
 	// ARGV[1] = maxConcurrency
-	// ARGV[2] = TTL（秒）
-	// ARGV[3] = requestID
+	// ARGV[2] = TTL闂佹寧绋戦悧蹇涳綖濡ゅ懏鏅?	// ARGV[3] = requestID
 	acquireScript = redis.NewScript(`
-		-- Redis 3.2-4.x compat: opt into effects replication so redis.call('TIME')
-		-- replicates correctly. No-op on Redis 5.0+ (effects replication is default).
-		redis.replicate_commands()
 		local key = KEYS[1]
 		local maxConcurrency = tonumber(ARGV[1])
 		local ttl = tonumber(ARGV[2])
 		local requestID = ARGV[3]
-
-		-- 使用 Redis 服务器时间，确保多实例时钟一致
-		local timeResult = redis.call('TIME')
-		local now = tonumber(timeResult[1])
+		local now = tonumber(ARGV[4])
 		local expireBefore = now - ttl
 
-		-- 清理过期槽位
 		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
 
-		-- 检查是否已存在（支持重试场景刷新时间戳）
 		local exists = redis.call('ZSCORE', key, requestID)
 		if exists ~= false then
 			redis.call('ZADD', key, now, requestID)
@@ -68,7 +51,6 @@ var (
 			return 1
 		end
 
-		-- 检查是否达到并发上限
 		local count = redis.call('ZCARD', key)
 		if count < maxConcurrency then
 			redis.call('ZADD', key, now, requestID)
@@ -79,20 +61,11 @@ var (
 		return 0
 	`)
 
-	// getCountScript 统计有序集合中的槽位数量并清理过期条目
-	// 使用 Redis TIME 命令获取服务器时间
-	// KEYS[1] = 有序集合键
-	// ARGV[1] = TTL（秒）
+	// getCountScript counts active slots after removing expired members.
 	getCountScript = redis.NewScript(`
-		-- Redis 3.2-4.x compat: opt into effects replication so redis.call('TIME')
-		-- replicates correctly. No-op on Redis 5.0+ (effects replication is default).
-		redis.replicate_commands()
 		local key = KEYS[1]
 		local ttl = tonumber(ARGV[1])
-
-		-- 使用 Redis 服务器时间
-		local timeResult = redis.call('TIME')
-		local now = tonumber(timeResult[1])
+		local now = tonumber(ARGV[2])
 		local expireBefore = now - ttl
 
 		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
@@ -153,17 +126,11 @@ var (
 			return 1
 		`)
 
-	// cleanupExpiredSlotsScript 清理单个账号/用户有序集合中过期槽位
-	// KEYS[1] = 有序集合键
-	// ARGV[1] = TTL（秒）
+	// cleanupExpiredSlotsScript removes expired members from a slot set.
 	cleanupExpiredSlotsScript = redis.NewScript(`
-		-- Redis 3.2-4.x compat: opt into effects replication so redis.call('TIME')
-		-- replicates correctly. No-op on Redis 5.0+ (effects replication is default).
-		redis.replicate_commands()
 		local key = KEYS[1]
 		local ttl = tonumber(ARGV[1])
-		local timeResult = redis.call('TIME')
-		local now = tonumber(timeResult[1])
+		local now = tonumber(ARGV[2])
 		local expireBefore = now - ttl
 		redis.call('ZREMRANGEBYSCORE', key, '-inf', expireBefore)
 		if redis.call('ZCARD', key) == 0 then
@@ -174,9 +141,7 @@ var (
 		return 1
 	`)
 
-	// startupCleanupScript 清理非当前进程前缀的槽位成员。
-	// KEYS 是有序集合键列表，ARGV[1] 是当前进程前缀，ARGV[2] 是槽位 TTL。
-	// 遍历每个 KEYS[i]，移除前缀不匹配的成员，清空后删 key，否则刷新 EXPIRE。
+	// startupCleanupScript removes slots left by older server processes.
 	startupCleanupScript = redis.NewScript(`
 		local activePrefix = ARGV[1]
 		local slotTTL = tonumber(ARGV[2])
@@ -201,13 +166,11 @@ var (
 
 type concurrencyCache struct {
 	rdb                 *redis.Client
-	slotTTLSeconds      int // 槽位过期时间（秒）
-	waitQueueTTLSeconds int // 等待队列过期时间（秒）
+	slotTTLSeconds      int
+	waitQueueTTLSeconds int
 }
 
-// NewConcurrencyCache 创建并发控制缓存
-// slotTTLMinutes: 槽位过期时间（分钟），0 或负数使用默认值 15 分钟
-// waitQueueTTLSeconds: 等待队列过期时间（秒），0 或负数使用 slot TTL
+// NewConcurrencyCache 闂佸憡甯楃粙鎴犵磽閹捐崵宓侀悹鍝勬惈缁叉椽鏌熺挩澶婂暙閻撴垹绱撻崒娑欏碍闁?// slotTTLMinutes: 濠碘€冲级閸ㄦ繄绱為崨顔戒氦闁搞儯鍔嶉崺鍌炴煛閸愩劎鍩ｆ俊顐㈡健閺佸秹宕煎┑鍡欌偓濠氭⒑閻ｅ苯娅愮紒杈ㄥ哺閺? 闂佺懓鐡ㄩ悧鐐电矆鐎ｎ喖鏋佸Λ棰佺閳诲繘鏌ｉ～顒€濮傜紒顕呭灣閹峰濡堕崨顏勪壕?15 闂佸憡甯掑Λ婵嬪箰?// waitQueueTTLSeconds: 缂備焦绋戦ˇ顖滄閻斿吋鈷撻柣鏂垮槻閻忔瑩寮堕埡浣瑰婵犫偓閿熺姴绫嶉柛顐ｆ礃閿涚喖鏌ㄥ☉妯煎ⅱ妞ゎ偅顨婇弫宥嗗緞濞戞氨顦? 闂佺懓鐡ㄩ悧鐐电矆鐎ｎ喖鏋佸Λ棰佺閳诲繘鏌?slot TTL
 func NewConcurrencyCache(rdb *redis.Client, slotTTLMinutes int, waitQueueTTLSeconds int) service.ConcurrencyCache {
 	if slotTTLMinutes <= 0 {
 		slotTTLMinutes = defaultSlotTTLMinutes
@@ -243,8 +206,7 @@ func accountWaitKey(accountID int64) string {
 
 func (c *concurrencyCache) AcquireAccountSlot(ctx context.Context, accountID int64, maxConcurrency int, requestID string) (bool, error) {
 	key := accountSlotKey(accountID)
-	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
-	result, err := acquireScript.Run(ctx, c.rdb, []string{key}, maxConcurrency, c.slotTTLSeconds, requestID).Int()
+	result, err := acquireScript.Run(ctx, c.rdb, []string{key}, maxConcurrency, c.slotTTLSeconds, requestID, time.Now().Unix()).Int()
 	if err != nil {
 		return false, err
 	}
@@ -258,8 +220,7 @@ func (c *concurrencyCache) ReleaseAccountSlot(ctx context.Context, accountID int
 
 func (c *concurrencyCache) GetAccountConcurrency(ctx context.Context, accountID int64) (int, error) {
 	key := accountSlotKey(accountID)
-	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取
-	result, err := getCountScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds).Int()
+	result, err := getCountScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds, time.Now().Unix()).Int()
 	if err != nil {
 		return 0, err
 	}
@@ -307,8 +268,7 @@ func (c *concurrencyCache) GetAccountConcurrencyBatch(ctx context.Context, accou
 
 func (c *concurrencyCache) AcquireUserSlot(ctx context.Context, userID int64, maxConcurrency int, requestID string) (bool, error) {
 	key := userSlotKey(userID)
-	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取，确保多实例时钟一致
-	result, err := acquireScript.Run(ctx, c.rdb, []string{key}, maxConcurrency, c.slotTTLSeconds, requestID).Int()
+	result, err := acquireScript.Run(ctx, c.rdb, []string{key}, maxConcurrency, c.slotTTLSeconds, requestID, time.Now().Unix()).Int()
 	if err != nil {
 		return false, err
 	}
@@ -322,8 +282,7 @@ func (c *concurrencyCache) ReleaseUserSlot(ctx context.Context, userID int64, re
 
 func (c *concurrencyCache) GetUserConcurrency(ctx context.Context, userID int64) (int, error) {
 	key := userSlotKey(userID)
-	// 时间戳在 Lua 脚本内使用 Redis TIME 命令获取
-	result, err := getCountScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds).Int()
+	result, err := getCountScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds, time.Now().Unix()).Int()
 	if err != nil {
 		return 0, err
 	}
@@ -381,8 +340,6 @@ func (c *concurrencyCache) GetAccountsLoadBatch(ctx context.Context, accounts []
 		return map[int64]*service.AccountLoadInfo{}, nil
 	}
 
-	// 使用 Pipeline 替代 Lua 脚本，兼容 Redis Cluster（Lua 内动态拼 key 会 CROSSSLOT）。
-	// 每个账号执行 3 个命令：ZREMRANGEBYSCORE（清理过期）、ZCARD（并发数）、GET（等待数）。
 	now, err := c.rdb.Time(ctx).Result()
 	if err != nil {
 		return nil, fmt.Errorf("redis TIME: %w", err)
@@ -442,7 +399,6 @@ func (c *concurrencyCache) GetUsersLoadBatch(ctx context.Context, users []servic
 		return map[int64]*service.UserLoadInfo{}, nil
 	}
 
-	// 使用 Pipeline 替代 Lua 脚本，兼容 Redis Cluster。
 	now, err := c.rdb.Time(ctx).Result()
 	if err != nil {
 		return nil, fmt.Errorf("redis TIME: %w", err)
@@ -499,7 +455,7 @@ func (c *concurrencyCache) GetUsersLoadBatch(ctx context.Context, users []servic
 
 func (c *concurrencyCache) CleanupExpiredAccountSlots(ctx context.Context, accountID int64) error {
 	key := accountSlotKey(accountID)
-	_, err := cleanupExpiredSlotsScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds).Result()
+	_, err := cleanupExpiredSlotsScript.Run(ctx, c.rdb, []string{key}, c.slotTTLSeconds, time.Now().Unix()).Result()
 	return err
 }
 
@@ -508,7 +464,6 @@ func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeR
 		return nil
 	}
 
-	// 1. 清理有序集合中非当前进程前缀的成员
 	slotPatterns := []string{accountSlotKeyPrefix + "*", userSlotKeyPrefix + "*"}
 	for _, pattern := range slotPatterns {
 		if err := c.cleanupSlotsByPattern(ctx, pattern, activeRequestPrefix); err != nil {
@@ -516,7 +471,6 @@ func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeR
 		}
 	}
 
-	// 2. 删除所有等待队列计数器（重启后计数器失效）
 	waitPatterns := []string{accountWaitKeyPrefix + "*", waitQueueKeyPrefix + "*"}
 	for _, pattern := range waitPatterns {
 		if err := c.deleteKeysByPattern(ctx, pattern); err != nil {
@@ -527,7 +481,7 @@ func (c *concurrencyCache) CleanupStaleProcessSlots(ctx context.Context, activeR
 	return nil
 }
 
-// cleanupSlotsByPattern 扫描匹配 pattern 的有序集合键，批量调用 Lua 脚本清理非当前进程成员。
+// cleanupSlotsByPattern scans slot keys and removes entries from old processes.
 func (c *concurrencyCache) cleanupSlotsByPattern(ctx context.Context, pattern, activePrefix string) error {
 	const scanCount = 200
 	var cursor uint64
@@ -550,7 +504,7 @@ func (c *concurrencyCache) cleanupSlotsByPattern(ctx context.Context, pattern, a
 	return nil
 }
 
-// deleteKeysByPattern 扫描匹配 pattern 的键并删除。
+// deleteKeysByPattern scans matching keys and deletes them in batches.
 func (c *concurrencyCache) deleteKeysByPattern(ctx context.Context, pattern string) error {
 	const scanCount = 200
 	var cursor uint64

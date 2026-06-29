@@ -99,7 +99,7 @@
               v-if="modelOptions.length > 0"
               v-model="selectedModel"
               :options="modelOptions"
-              :disabled="sending || modelOptions.length <= 1"
+              :disabled="sending || loadingModels || modelOptions.length <= 1"
               searchable
               placeholder="选择或输入模型"
               @change="onModelSelect"
@@ -108,7 +108,7 @@
               v-else
               v-model="selectedModel"
               disabled
-              placeholder="输入模型名称"
+              :placeholder="loadingModels ? '正在加载模型' : '暂无可用模型'"
             />
 
             <button class="icon-button h-10 w-10" type="button" title="重置当前对话" :disabled="sending" @click="resetActiveConversation">
@@ -199,7 +199,6 @@ import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Input from '@/components/common/Input.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { keysAPI } from '@/api/keys'
-import { userChannelsAPI, type UserAvailableChannel } from '@/api/channels'
 import { chatAPI, type ChatCompletionUsage, type ChatMessage } from '@/api/chat'
 import type { ApiKey } from '@/types'
 
@@ -229,7 +228,7 @@ const starterPrompts = [
 ]
 
 const apiKeys = ref<ApiKey[]>([])
-const availableChannels = ref<UserAvailableChannel[]>([])
+const gatewayModelsByKeyId = ref<Record<number, string[]>>({})
 const selectedKeyId = ref<number | null>(null)
 const selectedModel = ref('')
 const conversations = ref<Conversation[]>([createConversation('新对话')])
@@ -237,11 +236,13 @@ const activeConversationId = ref(conversations.value[0].id)
 const conversationSearch = ref('')
 const draft = ref('')
 const loadingKeys = ref(false)
+const loadingModels = ref(false)
 const sending = ref(false)
 const errorMessage = ref('')
 const lastUsage = ref<ChatCompletionUsage | null>(null)
 const messagesRef = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
+let modelLoadSeq = 0
 
 const activeConversation = computed(() =>
   conversations.value.find((item) => item.id === activeConversationId.value) ?? null
@@ -273,24 +274,17 @@ const apiKeyOptions = computed<ApiKeyOption[]>(() =>
 )
 
 const modelOptions = computed<SelectOption[]>(() => {
-  const key = selectedKey.value
-  if (!key) return []
-
-  const groupID = key.group_id ?? key.group?.id ?? null
-  const platform = key.group?.platform
-  const names = availableChannels.value.flatMap((channel) =>
-    channel.platforms.flatMap((section) => {
-      if (platform && section.platform !== platform) return []
-      if (groupID !== null && !section.groups.some((group) => group.id === groupID)) return []
-      return section.supported_models.map((model) => model.name)
-    })
-  )
-  return Array.from(new Set(names)).map((name) => ({ value: name, label: name }))
+  return availableModelsForKey(selectedKey.value).map((name) => ({ value: name, label: name }))
 })
 
 const canSend = computed(() =>
   Boolean(selectedKey.value?.key && selectedModel.value.trim() && draft.value.trim() && !sending.value)
 )
+
+function availableModelsForKey(key: ApiKey | null): string[] {
+  if (!key) return []
+  return gatewayModelsByKeyId.value[key.id] ?? []
+}
 
 function createConversation(title: string): Conversation {
   return {
@@ -328,20 +322,7 @@ function onModelSelect(value: string | number | boolean | null) {
 }
 
 function firstModelForKey(key: ApiKey | null): string {
-  if (!key) return ''
-
-  const groupID = key.group_id ?? key.group?.id ?? null
-  const platform = key.group?.platform
-  for (const channel of availableChannels.value) {
-    for (const section of channel.platforms) {
-      if (platform && section.platform !== platform) continue
-      if (groupID !== null && !section.groups.some((group) => group.id === groupID)) continue
-      const model = section.supported_models[0]
-      if (model?.name) return model.name
-    }
-  }
-
-  return ''
+  return availableModelsForKey(key)[0] ?? ''
 }
 
 function startNewChat() {
@@ -462,11 +443,44 @@ async function loadApiKeys() {
   }
 }
 
-async function loadSupportedModels() {
+async function loadModelsForKey(key: ApiKey | null) {
+  if (!key?.key) {
+    modelLoadSeq += 1
+    loadingModels.value = false
+    selectedModel.value = ''
+    return
+  }
+
+  const seq = ++modelLoadSeq
+  loadingModels.value = true
+
   try {
-    availableChannels.value = await userChannelsAPI.getAvailable()
-  } catch {
-    availableChannels.value = []
+    const models = await chatAPI.listModels(key.key)
+    gatewayModelsByKeyId.value = {
+      ...gatewayModelsByKeyId.value,
+      [key.id]: models
+    }
+
+    if (seq === modelLoadSeq && selectedKeyId.value === key.id) {
+      selectedModel.value = models.includes(selectedModel.value) ? selectedModel.value : (models[0] ?? '')
+      if (errorMessage.value.startsWith('加载模型失败：') || errorMessage.value === '加载模型失败。') {
+        errorMessage.value = ''
+      }
+    }
+  } catch (error) {
+    gatewayModelsByKeyId.value = {
+      ...gatewayModelsByKeyId.value,
+      [key.id]: []
+    }
+
+    if (seq === modelLoadSeq && selectedKeyId.value === key.id) {
+      selectedModel.value = ''
+      errorMessage.value = error instanceof Error ? `加载模型失败：${error.message}` : '加载模型失败。'
+    }
+  } finally {
+    if (seq === modelLoadSeq) {
+      loadingModels.value = false
+    }
   }
 }
 
@@ -485,14 +499,22 @@ async function refreshSelectedKey() {
 
 watch(selectedKey, (key) => {
   selectedModel.value = firstModelForKey(key)
+  void loadModelsForKey(key)
+})
+
+watch(modelOptions, (options) => {
+  const values = options.map((option) => String(option.value ?? ''))
+  if (values.length === 0) {
+    selectedModel.value = ''
+    return
+  }
+  if (!values.includes(selectedModel.value)) {
+    selectedModel.value = values[0]
+  }
 })
 
 onMounted(async () => {
-  await loadSupportedModels()
   await loadApiKeys()
-  if (selectedKey.value) {
-    selectedModel.value = firstModelForKey(selectedKey.value)
-  }
 })
 
 onBeforeUnmount(() => {
