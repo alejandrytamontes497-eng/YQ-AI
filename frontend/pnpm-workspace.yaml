@@ -3,6 +3,7 @@ packages:
 
 allowBuilds:
   esbuild: true
+  vue-demi: true
 
 overrides:
   js-cookie: 3.0.7
@@ -30,3 +31,4 @@ overrides:
 
 onlyBuiltDependencies:
   - esbuild
+  - vue-demi

@@ -1,5 +1,3 @@
-import type { ApiKey } from '@/types'
-
 export type ChatRole = 'system' | 'user' | 'assistant'
 
 export interface ChatMessage {
@@ -30,22 +28,6 @@ export interface ChatCompletionResponse {
     message?: ChatMessage
     finish_reason?: string
   }>
-}
-
-export function defaultModelForKey(apiKey: ApiKey | null | undefined): string {
-  switch (apiKey?.group?.platform) {
-    case 'openai':
-      return 'gpt-4o-mini'
-    case 'gemini':
-      return 'gemini-2.5-flash'
-    case 'grok':
-      return 'grok-3-mini'
-    case 'antigravity':
-      return 'claude-sonnet-4-5-20250929'
-    case 'anthropic':
-    default:
-      return 'claude-sonnet-4-5-20250929'
-  }
 }
 
 export async function createChatCompletion(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
@@ -89,8 +71,7 @@ export async function createChatCompletion(request: ChatCompletionRequest): Prom
 }
 
 export const chatAPI = {
-  createChatCompletion,
-  defaultModelForKey
+  createChatCompletion
 }
 
 export default chatAPI

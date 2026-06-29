@@ -99,7 +99,8 @@
               v-if="modelOptions.length > 0"
               v-model="selectedModel"
               :options="modelOptions"
-              disabled
+              :disabled="sending || modelOptions.length <= 1"
+              searchable
               placeholder="选择或输入模型"
               @change="onModelSelect"
             />
@@ -198,7 +199,7 @@ import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Input from '@/components/common/Input.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { keysAPI } from '@/api/keys'
-import { userChannelsAPI, type UserSupportedModel } from '@/api/channels'
+import { userChannelsAPI, type UserAvailableChannel } from '@/api/channels'
 import { chatAPI, type ChatCompletionUsage, type ChatMessage } from '@/api/chat'
 import type { ApiKey } from '@/types'
 
@@ -228,7 +229,7 @@ const starterPrompts = [
 ]
 
 const apiKeys = ref<ApiKey[]>([])
-const supportedModels = ref<UserSupportedModel[]>([])
+const availableChannels = ref<UserAvailableChannel[]>([])
 const selectedKeyId = ref<number | null>(null)
 const selectedModel = ref('')
 const conversations = ref<Conversation[]>([createConversation('新对话')])
@@ -272,10 +273,18 @@ const apiKeyOptions = computed<ApiKeyOption[]>(() =>
 )
 
 const modelOptions = computed<SelectOption[]>(() => {
-  const platform = selectedKey.value?.group?.platform
-  const names = supportedModels.value
-    .filter((model) => !platform || model.platform === platform)
-    .map((model) => model.name)
+  const key = selectedKey.value
+  if (!key) return []
+
+  const groupID = key.group_id ?? key.group?.id ?? null
+  const platform = key.group?.platform
+  const names = availableChannels.value.flatMap((channel) =>
+    channel.platforms.flatMap((section) => {
+      if (platform && section.platform !== platform) return []
+      if (groupID !== null && !section.groups.some((group) => group.id === groupID)) return []
+      return section.supported_models.map((model) => model.name)
+    })
+  )
   return Array.from(new Set(names)).map((name) => ({ value: name, label: name }))
 })
 
@@ -319,9 +328,20 @@ function onModelSelect(value: string | number | boolean | null) {
 }
 
 function firstModelForKey(key: ApiKey | null): string {
-  const platform = key?.group?.platform
-  const model = supportedModels.value.find((item) => !platform || item.platform === platform)
-  return model?.name || chatAPI.defaultModelForKey(key)
+  if (!key) return ''
+
+  const groupID = key.group_id ?? key.group?.id ?? null
+  const platform = key.group?.platform
+  for (const channel of availableChannels.value) {
+    for (const section of channel.platforms) {
+      if (platform && section.platform !== platform) continue
+      if (groupID !== null && !section.groups.some((group) => group.id === groupID)) continue
+      const model = section.supported_models[0]
+      if (model?.name) return model.name
+    }
+  }
+
+  return ''
 }
 
 function startNewChat() {
@@ -444,12 +464,9 @@ async function loadApiKeys() {
 
 async function loadSupportedModels() {
   try {
-    const channels = await userChannelsAPI.getAvailable()
-    supportedModels.value = channels.flatMap((channel) =>
-      channel.platforms.flatMap((platform) => platform.supported_models)
-    )
+    availableChannels.value = await userChannelsAPI.getAvailable()
   } catch {
-    supportedModels.value = []
+    availableChannels.value = []
   }
 }
 
@@ -467,13 +484,12 @@ async function refreshSelectedKey() {
 }
 
 watch(selectedKey, (key) => {
-  if (key && !selectedModel.value) {
-    selectedModel.value = firstModelForKey(key)
-  }
+  selectedModel.value = firstModelForKey(key)
 })
 
 onMounted(async () => {
-  await Promise.all([loadApiKeys(), loadSupportedModels()])
+  await loadSupportedModels()
+  await loadApiKeys()
   if (selectedKey.value) {
     selectedModel.value = firstModelForKey(selectedKey.value)
   }
