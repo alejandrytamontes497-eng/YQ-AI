@@ -195,14 +195,6 @@ interface ChatModelOption extends SelectOption {
   keyIds: number[]
 }
 
-interface ChatChannelModelSource {
-  platforms: Array<{
-    platform: string
-    groups: Array<{ id: number }>
-    supported_models: Array<{ name: string; platform?: string }>
-  }>
-}
-
 interface PersistedChatState {
   activeConversationId: string
   selectedModel: string
@@ -212,6 +204,7 @@ interface PersistedChatState {
 const MAX_CONVERSATIONS = 10
 const MAX_CONTEXT_MESSAGES = 10
 const CHAT_HISTORY_STORAGE_PREFIX = 'chat_history_v1'
+const STREAM_RENDER_MAX_CHARS_PER_FRAME = 160
 
 const starterPrompts = [
   '帮我把这件事拆成三步执行计划',
@@ -221,6 +214,7 @@ const starterPrompts = [
 
 const apiKeys = ref<ApiKey[]>([])
 const channelModels = ref<ChatModelOption[]>([])
+const availableModelNamesByKeyId = ref<Map<number, Set<string>>>(new Map())
 const selectedModel = ref('')
 const conversations = ref<Conversation[]>([createConversation('新对话')])
 const activeConversationId = ref(conversations.value[0].id)
@@ -232,6 +226,11 @@ const errorMessage = ref('')
 const lastUsage = ref<ChatCompletionUsage | null>(null)
 const messagesRef = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
+let streamRenderFrame: number | null = null
+let streamScrollFrame: number | null = null
+let streamAssistantMessage: UiMessage | null = null
+let streamDeltaBuffer = ''
+let streamDrainResolvers: Array<() => void> = []
 const authStore = useAuthStore()
 let restoringHistory = true
 
@@ -474,7 +473,7 @@ function trimActiveConversationMessages() {
   activeConversation.value.messages.splice(0, activeConversation.value.messages.length - MAX_CONTEXT_MESSAGES)
 }
 
-function touchConversation(content: string, role: ChatMessage['role']) {
+function touchConversation(content: string, role: ChatMessage['role'], options: { persist?: boolean } = {}) {
   if (!activeConversation.value) return
   activeConversation.value.preview = content || activeConversation.value.preview
   activeConversation.value.model = selectedModelName.value
@@ -482,13 +481,84 @@ function touchConversation(content: string, role: ChatMessage['role']) {
   if (role === 'user' && activeConversation.value.title === '新对话') {
     activeConversation.value.title = content.slice(0, 18) || '新对话'
   }
-  persistChatHistory()
+  if (options.persist !== false) {
+    persistChatHistory()
+  }
 }
 
 function appendAssistantMessage(message: UiMessage, delta: string) {
-  message.content += delta
-  touchConversation(message.content, 'assistant')
-  void scrollToBottom()
+  if (!delta) return
+  streamAssistantMessage = message
+  streamDeltaBuffer += delta
+  scheduleStreamRender()
+}
+
+function scheduleStreamRender() {
+  if (streamRenderFrame !== null) return
+  streamRenderFrame = window.requestAnimationFrame(() => {
+    streamRenderFrame = null
+    flushStreamDelta()
+  })
+}
+
+function streamFrameSize(bufferLength: number): number {
+  if (bufferLength > 1200) return STREAM_RENDER_MAX_CHARS_PER_FRAME
+  if (bufferLength > 500) return 96
+  if (bufferLength > 180) return 48
+  if (bufferLength > 60) return 24
+  if (bufferLength > 20) return 12
+  return Math.max(1, Math.ceil(bufferLength / 2))
+}
+
+function flushStreamDelta(options: { all?: boolean } = {}) {
+  if (!streamAssistantMessage || !streamDeltaBuffer) return
+
+  const take = options.all
+    ? streamDeltaBuffer.length
+    : Math.min(streamDeltaBuffer.length, streamFrameSize(streamDeltaBuffer.length))
+  streamAssistantMessage.content += streamDeltaBuffer.slice(0, take)
+  streamDeltaBuffer = streamDeltaBuffer.slice(take)
+  touchConversation(streamAssistantMessage.content, 'assistant', { persist: false })
+  queueScrollToBottom()
+
+  if (streamDeltaBuffer) {
+    scheduleStreamRender()
+  } else {
+    resolveStreamDrain()
+  }
+}
+
+function flushStreamDeltaNow() {
+  if (streamRenderFrame !== null) {
+    window.cancelAnimationFrame(streamRenderFrame)
+    streamRenderFrame = null
+  }
+  flushStreamDelta({ all: true })
+}
+
+function waitForStreamDrain(): Promise<void> {
+  if (!streamDeltaBuffer) return Promise.resolve()
+  scheduleStreamRender()
+  return new Promise((resolve) => {
+    streamDrainResolvers.push(resolve)
+  })
+}
+
+function resolveStreamDrain() {
+  if (streamDeltaBuffer || streamDrainResolvers.length === 0) return
+  const resolvers = streamDrainResolvers
+  streamDrainResolvers = []
+  resolvers.forEach((resolve) => resolve())
+}
+
+function resetStreamRenderer() {
+  if (streamRenderFrame !== null) {
+    window.cancelAnimationFrame(streamRenderFrame)
+    streamRenderFrame = null
+  }
+  streamAssistantMessage = null
+  streamDeltaBuffer = ''
+  resolveStreamDrain()
 }
 
 function parsePositiveNumber(value: string, fallback: number): number {
@@ -497,15 +567,18 @@ function parsePositiveNumber(value: string, fallback: number): number {
 }
 
 async function sendMessage() {
-  if (!canSend.value || !selectedKey.value) {
-    if (!selectedKey.value) {
+  const requestOption = selectedModelOption.value
+  const requestKey = selectedKey.value
+
+  if (!canSend.value || !requestKey) {
+    if (!requestKey) {
       errorMessage.value = '当前模型没有匹配到可用 API Key，请先在密钥页创建一个可访问该分组的 Key。'
     }
     return
   }
 
-  const requestModel = selectedModelOption.value?.model.trim()
-  if (!requestModel || !hasExactKeyForModel(selectedModelOption.value)) {
+  const requestModel = requestOption?.model.trim()
+  if (!requestModel || !keyHasExactModel(requestKey, requestModel, requestOption)) {
     errorMessage.value = '当前模型不在号池返回的可用模型列表中，请刷新后重新选择。'
     return
   }
@@ -521,12 +594,14 @@ async function sendMessage() {
 
   if (!assistantMessage) return
 
+  resetStreamRenderer()
+  streamAssistantMessage = assistantMessage
   abortController = new AbortController()
   sending.value = true
 
   try {
     const usage = await chatAPI.createChatCompletionStream({
-      apiKey: selectedKey.value.key,
+      apiKey: requestKey.key,
       model: requestModel,
       messages: requestMessages,
       temperature: 0.7,
@@ -539,13 +614,15 @@ async function sendMessage() {
       }
     })
 
+    await waitForStreamDrain()
     if (!assistantMessage.content.trim()) {
       assistantMessage.content = '模型没有返回可显示的内容。'
-      touchConversation(assistantMessage.content, 'assistant')
     }
+    touchConversation(assistantMessage.content, 'assistant')
     lastUsage.value = usage ?? lastUsage.value
     await refreshSelectedKey()
   } catch (error) {
+    flushStreamDeltaNow()
     const message = error instanceof Error ? error.message : '发送失败，请稍后重试。'
     errorMessage.value = message
     assistantMessage.content = `请求失败：${message}`
@@ -553,6 +630,7 @@ async function sendMessage() {
   } finally {
     sending.value = false
     abortController = null
+    resetStreamRenderer()
     await scrollToBottom()
   }
 }
@@ -564,37 +642,14 @@ async function scrollToBottom() {
   }
 }
 
-function normalizeChannelModels(channels: ChatChannelModelSource[]): ChatModelOption[] {
-  const byKey = new Map<string, ChatModelOption>()
-
-  for (const channel of channels) {
-    for (const section of channel.platforms) {
-      const groupIds = section.groups.map((group) => group.id)
-      for (const model of section.supported_models) {
-        const name = model.name.trim()
-        const platform = model.platform || section.platform
-        if (!name || !platform) continue
-
-        const key = `${platform}:${name}`
-        const existing = byKey.get(key)
-        if (existing) {
-          existing.groupIds = Array.from(new Set([...existing.groupIds, ...groupIds]))
-          continue
-        }
-
-        byKey.set(key, {
-          value: key,
-          label: `${name} · ${platformLabel(platform)}`,
-          model: name,
-          platform,
-          groupIds,
-          keyIds: []
-        })
-      }
+function queueScrollToBottom() {
+  if (streamScrollFrame !== null) return
+  streamScrollFrame = window.requestAnimationFrame(() => {
+    streamScrollFrame = null
+    if (messagesRef.value) {
+      messagesRef.value.scrollTop = messagesRef.value.scrollHeight
     }
-  }
-
-  return Array.from(byKey.values()).sort((a, b) => a.label.localeCompare(b.label))
+  })
 }
 
 async function loadModelsFromKeys(keys: ApiKey[]): Promise<ChatModelOption[]> {
@@ -605,6 +660,7 @@ async function loadModelsFromKeys(keys: ApiKey[]): Promise<ChatModelOption[]> {
     }))
   )
   const byKey = new Map<string, ChatModelOption>()
+  const namesByKeyId = new Map<number, Set<string>>()
 
   for (const result of results) {
     if (result.status !== 'fulfilled') continue
@@ -616,6 +672,10 @@ async function loadModelsFromKeys(keys: ApiKey[]): Promise<ChatModelOption[]> {
     for (const rawName of result.value.models) {
       const name = rawName.trim()
       if (!name) continue
+
+      const keyModelNames = namesByKeyId.get(apiKey.id) ?? new Set<string>()
+      keyModelNames.add(name)
+      namesByKeyId.set(apiKey.id, keyModelNames)
 
       const optionKey = `${platform}:${name}`
       const existing = byKey.get(optionKey)
@@ -635,6 +695,8 @@ async function loadModelsFromKeys(keys: ApiKey[]): Promise<ChatModelOption[]> {
       })
     }
   }
+
+  availableModelNamesByKeyId.value = namesByKeyId
 
   return Array.from(byKey.values())
 }
@@ -658,22 +720,31 @@ function mergeModelOptions(...sources: ChatModelOption[][]): ChatModelOption[] {
 }
 
 function selectKeyForModel(option: ChatModelOption | null): ApiKey | null {
-  if (!hasExactKeyForModel(option)) return null
+  const exactMatches = exactKeysForModel(option)
+  if (exactMatches.length === 0) return null
 
   const pickBestKey = (keys: ApiKey[]) =>
     keys.slice().sort((a, b) => keyRemainingQuota(b) - keyRemainingQuota(a))[0] ?? null
 
-  const directMatches = activeKeys.value.filter((key) => option.keyIds.includes(key.id))
-  return pickBestKey(directMatches)
+  return pickBestKey(exactMatches)
+}
+
+function exactKeysForModel(option: ChatModelOption | null): ApiKey[] {
+  const modelName = option?.model.trim()
+  if (!option || !modelName) return []
+
+  return activeKeys.value.filter((key) => keyHasExactModel(key, modelName, option))
+}
+
+function keyHasExactModel(key: ApiKey | null, modelName: string, option?: ChatModelOption | null): boolean {
+  if (!key || !modelName.trim()) return false
+  if (option && !option.keyIds.includes(key.id)) return false
+  return availableModelNamesByKeyId.value.get(key.id)?.has(modelName) === true
 }
 
 function hasExactKeyForModel(option: ChatModelOption | null): option is ChatModelOption {
-  if (!option?.model.trim()) return false
-  return activeKeys.value.some((key) => option.keyIds.includes(key.id))
+  return exactKeysForModel(option).length > 0
 }
-
-void normalizeChannelModels
-void hasExactKeyForModel
 
 function keyRemainingQuota(key: ApiKey): number {
   if (key.quota <= 0) return Number.POSITIVE_INFINITY
@@ -722,6 +793,11 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   abortController?.abort()
+  resetStreamRenderer()
+  if (streamScrollFrame !== null) {
+    window.cancelAnimationFrame(streamScrollFrame)
+    streamScrollFrame = null
+  }
 })
 </script>
 
