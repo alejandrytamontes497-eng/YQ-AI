@@ -169,7 +169,7 @@ import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Input from '@/components/common/Input.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { keysAPI } from '@/api/keys'
-import { chatAPI, type ChatCompletionUsage, type ChatMessage } from '@/api/chat'
+import { chatAPI, type ChatCompletionUsage, type ChatMessage, type UserChatModel } from '@/api/chat'
 import { useAuthStore } from '@/stores/auth'
 import type { ApiKey } from '@/types'
 
@@ -652,15 +652,65 @@ function queueScrollToBottom() {
   })
 }
 
+function loadModelsFromUserChatModels(models: UserChatModel[], keys: ApiKey[]): ChatModelOption[] {
+  const byKey = new Map<string, ChatModelOption>()
+  const namesByKeyId = new Map<number, Set<string>>()
+
+  for (const rawModel of models) {
+    const name = rawModel.name.trim()
+    const platform = rawModel.platform || 'unknown'
+    const groupIds = rawModel.group_ids.filter((id) => typeof id === 'number')
+    if (!name || groupIds.length === 0) continue
+
+    const matchingKeyIds = keys
+      .filter((key) => typeof key.group_id === 'number' && groupIds.includes(key.group_id))
+      .map((key) => {
+        const keyModelNames = namesByKeyId.get(key.id) ?? new Set<string>()
+        keyModelNames.add(name)
+        namesByKeyId.set(key.id, keyModelNames)
+        return key.id
+      })
+
+    const optionKey = `${platform}:${name}`
+    const existing = byKey.get(optionKey)
+    if (existing) {
+      existing.groupIds = Array.from(new Set([...existing.groupIds, ...groupIds]))
+      existing.keyIds = Array.from(new Set([...existing.keyIds, ...matchingKeyIds]))
+      continue
+    }
+
+    byKey.set(optionKey, {
+      value: optionKey,
+      label: `${name} 路 ${platformLabel(platform)}`,
+      model: name,
+      platform,
+      groupIds,
+      keyIds: matchingKeyIds
+    })
+  }
+
+  availableModelNamesByKeyId.value = namesByKeyId
+
+  return Array.from(byKey.values())
+}
+
 async function loadModelsFromKeys(keys: ApiKey[]): Promise<ChatModelOption[]> {
+  const models = await chatAPI.listUserChatModels()
+  const options = loadModelsFromUserChatModels(models, keys)
+
+  if (options.length > 0) {
+    return options
+  }
+
+  const byKey = new Map<string, ChatModelOption>()
+  const namesByKeyId = new Map<number, Set<string>>()
+
   const results = await Promise.allSettled(
     keys.map(async (key) => ({
       key,
       models: await chatAPI.listModels(key.key)
     }))
   )
-  const byKey = new Map<string, ChatModelOption>()
-  const namesByKeyId = new Map<number, Set<string>>()
 
   for (const result of results) {
     if (result.status !== 'fulfilled') continue

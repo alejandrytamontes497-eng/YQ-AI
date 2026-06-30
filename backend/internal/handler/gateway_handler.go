@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -24,6 +25,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -1037,6 +1039,94 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		"object": "list",
 		"data":   claude.DefaultModels,
 	})
+}
+
+type userChatModel struct {
+	Name     string  `json:"name"`
+	Platform string  `json:"platform"`
+	GroupIDs []int64 `json:"group_ids"`
+}
+
+// UserChatModels returns models available to the authenticated user from
+// schedulable accounts in groups the user can access. It does not require the
+// user to create or choose a frontend API key.
+func (h *GatewayHandler) UserChatModels(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	if h == nil || h.gatewayService == nil || h.apiKeyService == nil {
+		response.Success(c, []userChatModel{})
+		return
+	}
+
+	groups, err := h.apiKeyService.GetAvailableGroups(c.Request.Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	byKey := make(map[string]userChatModel)
+	for _, group := range groups {
+		groupID := group.ID
+		platform := strings.TrimSpace(group.Platform)
+		if platform == "" {
+			continue
+		}
+
+		defaultModels := defaultModelIDsForPlatform(platform)
+		if len(defaultModels) == 0 {
+			continue
+		}
+
+		diag := h.gatewayService.DiagnoseModelAvailabilityForPlatform(c.Request.Context(), &groupID, defaultModels[0], platform)
+		if !diag.HasAccountsInPool {
+			continue
+		}
+
+		models := h.gatewayService.GetAvailableModels(c.Request.Context(), &groupID, platform)
+		if group.CustomModelsListEnabled() {
+			models = filterModelsByCustomList(models, defaultModels, group.ModelsListConfig.Models)
+		} else if len(models) == 0 {
+			models = defaultModels
+		}
+
+		for _, model := range models {
+			model = strings.TrimSpace(model)
+			if model == "" {
+				continue
+			}
+			key := platform + ":" + model
+			item := byKey[key]
+			if item.Name == "" {
+				item = userChatModel{Name: model, Platform: platform}
+			}
+			item.GroupIDs = appendUniqueInt64(item.GroupIDs, groupID)
+			byKey[key] = item
+		}
+	}
+
+	items := make([]userChatModel, 0, len(byKey))
+	for _, item := range byKey {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Platform == items[j].Platform {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Platform < items[j].Platform
+	})
+	response.Success(c, items)
+}
+
+func appendUniqueInt64(values []int64, next int64) []int64 {
+	for _, value := range values {
+		if value == next {
+			return values
+		}
+	}
+	return append(values, next)
 }
 
 func writeModelsList(c *gin.Context, modelIDs []string) {

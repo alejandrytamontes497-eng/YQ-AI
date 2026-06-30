@@ -1,3 +1,5 @@
+import { apiClient } from './client'
+
 export type ChatRole = 'system' | 'user' | 'assistant'
 
 export interface ChatMessage {
@@ -33,6 +35,12 @@ export interface ChatCompletionResponse {
     message?: ChatMessage
     finish_reason?: string
   }>
+}
+
+export interface UserChatModel {
+  name: string
+  platform: string
+  group_ids: number[]
 }
 
 function parseJsonBody(text: string): any {
@@ -206,10 +214,16 @@ export async function listModels(apiKey: string, signal?: AbortSignal): Promise<
   return normalizeModelsBody(body)
 }
 
+export async function listUserChatModels(signal?: AbortSignal): Promise<UserChatModel[]> {
+  const { data } = await apiClient.get<UserChatModel[]>('/user/chat/models', { signal })
+  return Array.isArray(data) ? data : []
+}
+
 export const chatAPI = {
   createChatCompletion,
   createChatCompletionStream,
-  listModels
+  listModels,
+  listUserChatModels
 }
 
 export default chatAPI
