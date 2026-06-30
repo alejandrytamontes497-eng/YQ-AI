@@ -151,7 +151,12 @@
               </button>
               <div v-if="message.content" class="message-rendered-content">
                 <template v-for="part in messagePartsForMessage(message)" :key="part.id">
-                  <div v-if="part.type === 'text'" class="message-text whitespace-pre-wrap break-words">{{ part.content }}</div>
+                  <div v-if="part.type === 'text'" class="message-text whitespace-pre-wrap break-words">
+                    <template v-for="inline in inlinePartsForText(part.content, part.id)" :key="inline.id">
+                      <code v-if="inline.type === 'inline-code'" class="message-inline-code">{{ inline.content }}</code>
+                      <span v-else>{{ inline.content }}</span>
+                    </template>
+                  </div>
                   <div v-else class="message-code-block">
                     <div class="message-code-toolbar">
                       <span>{{ part.language || (part.type === 'xml' ? 'XML' : 'Code') }}</span>
@@ -262,6 +267,12 @@ interface MessagePart {
   type: 'text' | 'code' | 'xml'
   content: string
   language?: string
+}
+
+interface InlineMessagePart {
+  id: string
+  type: 'text' | 'inline-code'
+  content: string
 }
 
 interface PersistedChatState {
@@ -592,6 +603,49 @@ function copySegmentsForMessage(message: UiMessage): CopySegment[] {
 
 function messagePartsForMessage(message: UiMessage): MessagePart[] {
   return parseMessageParts(message.content, message.id)
+}
+
+function inlinePartsForText(content: string, parentID: string): InlineMessagePart[] {
+  if (!content) return []
+
+  const parts: InlineMessagePart[] = []
+  const inlinePattern = /`([^`\n]+)`/g
+  let cursor = 0
+  let match: RegExpExecArray | null
+
+  while ((match = inlinePattern.exec(content)) !== null) {
+    if (match.index > cursor) {
+      appendInlineTextPart(parts, parentID, content.slice(cursor, match.index))
+    }
+    const inlineCode = match[1]?.trim()
+    if (inlineCode) {
+      parts.push({
+        id: `${parentID}:inline:${parts.length}`,
+        type: 'inline-code',
+        content: inlineCode
+      })
+    }
+    cursor = match.index + match[0].length
+  }
+
+  if (cursor < content.length) {
+    appendInlineTextPart(parts, parentID, content.slice(cursor))
+  }
+
+  return parts.length > 0 ? parts : [{ id: `${parentID}:inline:0`, type: 'text', content: stripInlineTicks(content) }]
+}
+
+function appendInlineTextPart(parts: InlineMessagePart[], parentID: string, raw: string) {
+  if (!raw) return
+  parts.push({
+    id: `${parentID}:inline:${parts.length}`,
+    type: 'text',
+    content: stripInlineTicks(raw)
+  })
+}
+
+function stripInlineTicks(text: string): string {
+  return text.replace(/`/g, '')
 }
 
 function parseMessageParts(content: string, messageID: string): MessagePart[] {
@@ -1233,6 +1287,10 @@ onBeforeUnmount(() => {
 .message-rendered-content ~ .message-content,
 .message-rendered-content ~ .message-segment-actions {
   @apply hidden;
+}
+
+.message-inline-code {
+  @apply mx-0.5 rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[0.92em] text-gray-800 dark:bg-dark-700 dark:text-gray-100;
 }
 
 .message-code-block {
