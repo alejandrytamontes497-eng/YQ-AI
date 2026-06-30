@@ -174,7 +174,7 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 		// 这是一个配置错误，不应该允许绕过验证
 		if s.emailService == nil {
 			logger.LegacyPrintf("service.auth", "%s", "[Auth] Email verification enabled but email service not configured, rejecting registration")
-			return "", nil, ErrServiceUnavailable
+			return "", nil, ErrEmailNotConfigured
 		}
 		if verifyCode == "" {
 			return "", nil, ErrEmailVerifyRequired
@@ -304,7 +304,7 @@ func (s *AuthService) SendVerifyCode(ctx context.Context, email string, locale .
 
 	// 发送验证码
 	if s.emailService == nil {
-		return errors.New("email service not configured")
+		return ErrEmailNotConfigured
 	}
 
 	// 获取网站名称
@@ -347,7 +347,7 @@ func (s *AuthService) SendVerifyCodeAsync(ctx context.Context, email string, loc
 	// 检查邮件队列服务是否配置
 	if s.emailQueueService == nil {
 		logger.LegacyPrintf("service.auth", "%s", "[Auth] Email queue service not configured")
-		return nil, errors.New("email queue service not configured")
+		return nil, ErrEmailNotConfigured
 	}
 
 	// 获取网站名称

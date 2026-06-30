@@ -41,6 +41,26 @@ describe('buildAuthErrorMessage', () => {
     expect(message).toBe('error message')
   })
 
+  it('prefers configured reason message when available', () => {
+    const message = buildAuthErrorMessage(
+      {
+        response: {
+          data: {
+            reason: 'EMAIL_NOT_CONFIGURED',
+            message: 'email service not configured'
+          }
+        },
+      },
+      {
+        fallback: 'fallback',
+        reasonMessages: {
+          EMAIL_NOT_CONFIGURED: 'configure email first'
+        }
+      }
+    )
+    expect(message).toBe('configure email first')
+  })
+
   it('uses fallback when no message can be extracted', () => {
     expect(buildAuthErrorMessage({}, { fallback: 'fallback' })).toBe('fallback')
   })

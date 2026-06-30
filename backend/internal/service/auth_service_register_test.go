@@ -325,7 +325,7 @@ func TestAuthService_Register_EmailVerifyEnabledButServiceNotConfigured(t *testi
 
 	// 应返回服务不可用错误，而不是允许绕过验证
 	_, _, err := service.RegisterWithVerification(context.Background(), "user@test.com", "password", "any-code", "", "", "")
-	require.ErrorIs(t, err, ErrServiceUnavailable)
+	require.ErrorIs(t, err, ErrEmailNotConfigured)
 }
 
 func TestAuthService_Register_EmailVerifyRequired(t *testing.T) {

@@ -454,6 +454,12 @@ export default {
       USER_NOT_ACTIVE: 'Account has been disabled.',
     },
     registrationFailed: 'Registration failed. Please try again.',
+    emailAlreadyExists: 'This email is already registered. Please sign in.',
+    emailReserved: 'This email cannot be used for registration. Please use another email.',
+    emailVerifyRequired: 'Please complete email verification first.',
+    emailNotConfigured: 'Email verification is enabled, but email service is not configured. Please contact the administrator.',
+    verifyCodeInvalidOrExpired: 'The verification code is invalid or expired. Please request a new one.',
+    turnstileNotConfigured: 'Bot protection is enabled but not fully configured. Please contact the administrator.',
     emailSuffixNotAllowed: 'This email domain is not allowed for registration.',
     emailSuffixNotAllowedWithAllowed:
       'This email domain is not allowed. Allowed domains: {suffixes}',

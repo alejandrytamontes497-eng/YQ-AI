@@ -747,6 +747,22 @@ function buildEmailSuffixNotAllowedMessage(): string {
   })
 }
 
+function buildRegistrationReasonMessages(): Record<string, string> {
+  return {
+    REGISTRATION_DISABLED: t('auth.registrationDisabled'),
+    EMAIL_EXISTS: t('auth.emailAlreadyExists'),
+    EMAIL_RESERVED: t('auth.emailReserved'),
+    EMAIL_SUFFIX_NOT_ALLOWED: buildEmailSuffixNotAllowedMessage(),
+    EMAIL_VERIFY_REQUIRED: t('auth.emailVerifyRequired'),
+    EMAIL_NOT_CONFIGURED: t('auth.emailNotConfigured'),
+    INVALID_VERIFY_CODE: t('auth.verifyCodeInvalidOrExpired'),
+    INVITATION_CODE_REQUIRED: t('auth.invitationCodeRequired'),
+    INVITATION_CODE_INVALID: t('auth.invitationCodeInvalidCannotRegister'),
+    TURNSTILE_NOT_CONFIGURED: t('auth.turnstileNotConfigured'),
+    TURNSTILE_VERIFICATION_FAILED: t('auth.turnstileFailed')
+  }
+}
+
 function validateForm(): boolean {
   // Reset errors
   errors.email = ''
@@ -906,7 +922,8 @@ async function handleRegister(): Promise<void> {
 
     // Handle registration error
     errorMessage.value = buildAuthErrorMessage(error, {
-      fallback: t('auth.registrationFailed')
+      fallback: t('auth.registrationFailed'),
+      reasonMessages: buildRegistrationReasonMessages()
     })
 
     // Also show error toast

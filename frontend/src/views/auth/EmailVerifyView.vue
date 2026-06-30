@@ -440,7 +440,8 @@ async function sendCode(): Promise<void> {
     resendTurnstileToken.value = ''
   } catch (error: unknown) {
     errorMessage.value = buildAuthErrorMessage(error, {
-      fallback: t('auth.sendCodeFailed')
+      fallback: t('auth.sendCodeFailed'),
+      reasonMessages: buildRegistrationReasonMessages()
     })
 
     appStore.showError(errorMessage.value)
@@ -557,7 +558,8 @@ async function handleVerify(): Promise<void> {
     await router.push(pendingRedirect.value || '/dashboard')
   } catch (error: unknown) {
     errorMessage.value = buildAuthErrorMessage(error, {
-      fallback: t('auth.verifyFailed')
+      fallback: t('auth.verifyFailed'),
+      reasonMessages: buildRegistrationReasonMessages()
     })
 
     appStore.showError(errorMessage.value)
@@ -588,6 +590,22 @@ function buildEmailSuffixNotAllowedMessage(): string {
       more: (count) => t('auth.emailSuffixAllowedMore', { count })
     })
   })
+}
+
+function buildRegistrationReasonMessages(): Record<string, string> {
+  return {
+    REGISTRATION_DISABLED: t('auth.registrationDisabled'),
+    EMAIL_EXISTS: t('auth.emailAlreadyExists'),
+    EMAIL_RESERVED: t('auth.emailReserved'),
+    EMAIL_SUFFIX_NOT_ALLOWED: buildEmailSuffixNotAllowedMessage(),
+    EMAIL_VERIFY_REQUIRED: t('auth.emailVerifyRequired'),
+    EMAIL_NOT_CONFIGURED: t('auth.emailNotConfigured'),
+    INVALID_VERIFY_CODE: t('auth.verifyCodeInvalidOrExpired'),
+    INVITATION_CODE_REQUIRED: t('auth.invitationCodeRequired'),
+    INVITATION_CODE_INVALID: t('auth.invitationCodeInvalidCannotRegister'),
+    TURNSTILE_NOT_CONFIGURED: t('auth.turnstileNotConfigured'),
+    TURNSTILE_VERIFICATION_FAILED: t('auth.turnstileFailed')
+  }
 }
 </script>
 

@@ -149,6 +149,26 @@
               >
                 <Icon :name="copiedTarget === `${message.id}:full` ? 'check' : 'copy'" size="xs" :stroke-width="2" />
               </button>
+              <div v-if="message.content" class="message-rendered-content">
+                <template v-for="part in messagePartsForMessage(message)" :key="part.id">
+                  <div v-if="part.type === 'text'" class="message-text whitespace-pre-wrap break-words">{{ part.content }}</div>
+                  <div v-else class="message-code-block">
+                    <div class="message-code-toolbar">
+                      <span>{{ part.language || (part.type === 'xml' ? 'XML' : 'Code') }}</span>
+                      <button
+                        class="message-code-copy"
+                        type="button"
+                        :title="copiedTarget === part.id ? '已复制' : '复制该片段'"
+                        @click="copyText(part.content, part.id)"
+                      >
+                        <Icon :name="copiedTarget === part.id ? 'check' : 'copy'" size="xs" :stroke-width="2" />
+                        <span>{{ copiedTarget === part.id ? '已复制' : '复制' }}</span>
+                      </button>
+                    </div>
+                    <pre><code>{{ part.content }}</code></pre>
+                  </div>
+                </template>
+              </div>
               <div class="message-content whitespace-pre-wrap break-words">{{ message.content || '正在生成回复...' }}</div>
               <div v-if="copySegmentsForMessage(message).length > 0" class="message-segment-actions">
                 <button
@@ -235,6 +255,13 @@ interface CopySegment {
   title: string
   content: string
   type: 'code' | 'xml'
+}
+
+interface MessagePart {
+  id: string
+  type: 'text' | 'code' | 'xml'
+  content: string
+  language?: string
 }
 
 interface PersistedChatState {
@@ -561,6 +588,59 @@ function copySegmentsForMessage(message: UiMessage): CopySegment[] {
     ...segment,
     id: `${message.id}:segment:${index}`
   }))
+}
+
+function messagePartsForMessage(message: UiMessage): MessagePart[] {
+  return parseMessageParts(message.content, message.id)
+}
+
+function parseMessageParts(content: string, messageID: string): MessagePart[] {
+  if (!content) return []
+
+  const parts: MessagePart[] = []
+  const fencedPattern = /```([^\n`]*)\n?([\s\S]*?)```/g
+  let cursor = 0
+  let match: RegExpExecArray | null
+
+  while ((match = fencedPattern.exec(content)) !== null) {
+    if (match.index > cursor) {
+      appendTextPart(parts, messageID, content.slice(cursor, match.index))
+    }
+    const language = match[1]?.trim()
+    const body = match[2]?.replace(/^\n|\n$/g, '').trim()
+    if (body) {
+      parts.push({
+        id: `${messageID}:part:${parts.length}`,
+        type: isXmlText(body) || language?.toLowerCase().includes('xml') ? 'xml' : 'code',
+        language: language || undefined,
+        content: body
+      })
+    }
+    cursor = match.index + match[0].length
+  }
+
+  if (cursor < content.length) {
+    appendTextPart(parts, messageID, content.slice(cursor))
+  }
+
+  if (parts.length === 0) {
+    const text = content.trim()
+    if (isXmlText(text)) {
+      return [{ id: `${messageID}:part:0`, type: 'xml', language: 'XML', content: text }]
+    }
+    return [{ id: `${messageID}:part:0`, type: 'text', content }]
+  }
+
+  return parts
+}
+
+function appendTextPart(parts: MessagePart[], messageID: string, raw: string) {
+  if (!raw) return
+  parts.push({
+    id: `${messageID}:part:${parts.length}`,
+    type: 'text',
+    content: raw
+  })
 }
 
 function extractCopySegments(content: string): Omit<CopySegment, 'id'>[] {
@@ -1144,6 +1224,35 @@ onBeforeUnmount(() => {
 
 .message-content {
   @apply pr-8;
+}
+
+.message-rendered-content {
+  @apply space-y-3 pr-8;
+}
+
+.message-rendered-content ~ .message-content,
+.message-rendered-content ~ .message-segment-actions {
+  @apply hidden;
+}
+
+.message-code-block {
+  @apply overflow-hidden rounded-lg border border-gray-200 bg-gray-950 text-gray-100 dark:border-dark-600;
+}
+
+.message-code-toolbar {
+  @apply flex items-center justify-between border-b border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-gray-300;
+}
+
+.message-code-copy {
+  @apply inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-gray-200 transition hover:bg-white/10;
+}
+
+.message-code-block pre {
+  @apply max-h-[420px] overflow-auto p-3 text-xs leading-5;
+}
+
+.message-code-block code {
+  @apply whitespace-pre font-mono;
 }
 
 .message-segment-actions {
