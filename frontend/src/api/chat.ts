@@ -14,6 +14,11 @@ export interface ChatCompletionRequest {
   signal?: AbortSignal
 }
 
+export interface ChatCompletionStreamCallbacks {
+  onDelta?: (content: string) => void
+  onUsage?: (usage: ChatCompletionUsage) => void
+}
+
 export interface ChatCompletionUsage {
   prompt_tokens?: number
   completion_tokens?: number
@@ -71,6 +76,96 @@ export async function createChatCompletion(request: ChatCompletionRequest): Prom
   return body as ChatCompletionResponse
 }
 
+function readStreamDelta(body: any): string {
+  const choice = body?.choices?.[0]
+  return choice?.delta?.content || choice?.message?.content || ''
+}
+
+function readStreamUsage(body: any): ChatCompletionUsage | null {
+  return body?.usage ?? null
+}
+
+function parseSSELines(buffer: string): { lines: string[]; rest: string } {
+  const normalized = buffer.replace(/\r\n/g, '\n')
+  const parts = normalized.split('\n')
+  return {
+    lines: parts.slice(0, -1),
+    rest: parts[parts.length - 1] ?? ''
+  }
+}
+
+export async function createChatCompletionStream(
+  request: ChatCompletionRequest,
+  callbacks: ChatCompletionStreamCallbacks = {}
+): Promise<ChatCompletionUsage | null> {
+  const response = await fetch('/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${request.apiKey}`
+    },
+    body: JSON.stringify({
+      model: request.model,
+      messages: request.messages,
+      temperature: request.temperature,
+      max_tokens: request.max_tokens,
+      stream: true,
+      stream_options: {
+        include_usage: true
+      }
+    }),
+    signal: request.signal
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    const body = parseJsonBody(text)
+    throw new Error(errorMessageFromBody(body, `Chat request failed with HTTP ${response.status}`))
+  }
+
+  if (!response.body) {
+    throw new Error('Streaming response is not available')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let usage: ChatCompletionUsage | null = null
+
+  const handleLine = (line: string) => {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('data:')) return
+
+    const data = trimmed.slice(5).trim()
+    if (!data || data === '[DONE]') return
+
+    const body = parseJsonBody(data)
+    const delta = readStreamDelta(body)
+    if (delta) callbacks.onDelta?.(delta)
+
+    const nextUsage = readStreamUsage(body)
+    if (nextUsage) {
+      usage = nextUsage
+      callbacks.onUsage?.(nextUsage)
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const parsed = parseSSELines(buffer)
+    buffer = parsed.rest
+    parsed.lines.forEach(handleLine)
+  }
+
+  buffer += decoder.decode()
+  if (buffer.trim()) handleLine(buffer)
+
+  return usage
+}
+
 function normalizeModelItem(item: unknown): string {
   if (typeof item === 'string') return item
   if (item && typeof item === 'object') {
@@ -113,6 +208,7 @@ export async function listModels(apiKey: string, signal?: AbortSignal): Promise<
 
 export const chatAPI = {
   createChatCompletion,
+  createChatCompletionStream,
   listModels
 }
 

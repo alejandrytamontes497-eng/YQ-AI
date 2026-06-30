@@ -4,7 +4,7 @@
       <aside class="chat-sidebar">
         <div class="flex items-center justify-between px-5 pt-5">
           <h1 class="text-xl font-semibold text-gray-950 dark:text-white">在线聊天</h1>
-          <button class="icon-button" type="button" title="刷新密钥" :disabled="loadingKeys" @click="loadApiKeys">
+          <button class="icon-button" type="button" title="刷新模型" :disabled="loading" @click="loadChatData">
             <Icon name="refresh" size="sm" />
           </button>
         </div>
@@ -28,29 +28,32 @@
         </div>
 
         <div class="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-4">
-          <button
+          <div
             v-for="conversation in filteredConversations"
             :key="conversation.id"
-            type="button"
             class="conversation-item"
             :class="{ 'conversation-item-active': conversation.id === activeConversationId }"
-            @click="selectConversation(conversation.id)"
           >
-            <span class="conversation-icon">
-              <Icon name="chat" size="sm" />
-            </span>
-            <span class="min-w-0 flex-1 text-left">
-              <span class="block truncate text-sm font-semibold text-gray-900 dark:text-white">
-                {{ conversation.title }}
+            <button type="button" class="min-w-0 flex flex-1 gap-3 text-left" @click="selectConversation(conversation.id)">
+              <span class="conversation-icon">
+                <Icon name="chat" size="sm" />
               </span>
-              <span class="mt-1 block truncate text-xs text-gray-500 dark:text-gray-400">
-                {{ conversation.preview || '暂无消息' }}
+              <span class="min-w-0 flex-1">
+                <span class="block truncate text-sm font-semibold text-gray-900 dark:text-white">
+                  {{ conversation.title }}
+                </span>
+                <span class="mt-1 block truncate text-xs text-gray-500 dark:text-gray-400">
+                  {{ conversation.preview || '暂无消息' }}
+                </span>
+                <span class="mt-1 block truncate text-xs text-primary-600 dark:text-primary-300">
+                  {{ conversation.model || selectedModelName || '未选择模型' }} · {{ conversation.updatedAt }}
+                </span>
               </span>
-              <span class="mt-1 block truncate text-xs text-primary-600 dark:text-primary-300">
-                {{ conversation.model || selectedModel || '未选择模型' }} · {{ conversation.updatedAt }}
-              </span>
-            </span>
-          </button>
+            </button>
+            <button class="conversation-delete" type="button" title="删除对话" :disabled="sending" @click.stop="deleteConversation(conversation.id)">
+              <Icon name="trash" size="sm" />
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -62,53 +65,29 @@
                 {{ activeConversation?.title || '新对话' }}
               </h2>
               <span class="rounded-full bg-primary-50 px-2 py-0.5 text-xs font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-200">
-                {{ platformLabel(selectedKey?.group?.platform) }}
+                {{ platformLabel(selectedModelOption?.platform) }}
               </span>
             </div>
             <p class="mt-1 truncate text-sm text-gray-500 dark:text-gray-400">
-              {{ selectedModel || '请选择模型' }}
+              {{ selectedModelName || '请选择模型' }}
             </p>
           </div>
 
-          <div class="grid min-w-0 flex-1 gap-3 md:grid-cols-[minmax(220px,1fr)_minmax(220px,1fr)_auto]">
-            <Select
-              v-model="selectedKeyId"
-              :options="apiKeyOptions"
-              :disabled="loadingKeys || sending"
-              searchable
-              placeholder="选择计费 API 密钥"
-              empty-text="暂无可用密钥"
-              @change="onKeyChange"
-            >
-              <template #selected="{ option }">
-                <span v-if="option" class="truncate">{{ option.label }}</span>
-                <span v-else class="text-gray-400">选择计费 API 密钥</span>
-              </template>
-              <template #option="{ option, selected }">
-                <div class="min-w-0 flex-1">
-                  <div class="truncate text-sm font-medium">{{ option.label }}</div>
-                  <div class="truncate text-xs text-gray-500 dark:text-gray-400">
-                    {{ option.platformLabel }} · {{ option.quotaLabel }}
-                  </div>
-                </div>
-                <Icon v-if="selected" name="check" size="sm" class="text-primary-500" :stroke-width="2" />
-              </template>
-            </Select>
-
+          <div class="grid min-w-0 flex-1 gap-3 md:grid-cols-[minmax(220px,1fr)_auto]">
             <Select
               v-if="modelOptions.length > 0"
               v-model="selectedModel"
               :options="modelOptions"
-              :disabled="sending || loadingModels || modelOptions.length <= 1"
+              :disabled="sending || loading || modelOptions.length <= 1"
               searchable
-              placeholder="选择或输入模型"
+              placeholder="选择号池可用模型"
               @change="onModelSelect"
             />
             <Input
               v-else
               v-model="selectedModel"
               disabled
-              :placeholder="loadingModels ? '正在加载模型' : '暂无可用模型'"
+              :placeholder="loading ? '正在加载模型' : '暂无可用模型'"
             />
 
             <button class="icon-button h-10 w-10" type="button" title="重置当前对话" :disabled="sending" @click="resetActiveConversation">
@@ -124,7 +103,7 @@
             </div>
             <h3 class="text-2xl font-bold text-gray-950 dark:text-white">今天想聊点什么？</h3>
             <p class="mt-3 text-sm text-gray-500 dark:text-gray-400">
-              把问题、任务、代码片段，或者一段图片描述发过来。
+              选择号池可用模型后直接发送消息，费用从账户余额中扣除。
             </p>
             <div class="mt-8 grid gap-3 md:grid-cols-3">
               <button
@@ -149,16 +128,7 @@
               <Icon :name="message.role === 'user' ? 'user' : 'sparkles'" size="sm" />
             </div>
             <div class="message-bubble" :class="message.role === 'user' ? 'message-bubble-user' : 'message-bubble-assistant'">
-              <div class="whitespace-pre-wrap break-words">{{ message.content }}</div>
-            </div>
-          </div>
-
-          <div v-if="sending" class="message-row message-row-assistant">
-            <div class="message-avatar message-avatar-assistant">
-              <Icon name="sparkles" size="sm" />
-            </div>
-            <div class="message-bubble message-bubble-assistant">
-              正在生成回复...
+              <div class="whitespace-pre-wrap break-words">{{ message.content || '正在生成回复...' }}</div>
             </div>
           </div>
         </div>
@@ -183,7 +153,7 @@
             </button>
           </div>
           <div class="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-400">
-            <span>{{ selectedKey ? `使用 ${selectedKey.name} 计费` : '请选择 API 密钥' }}</span>
+            <span>{{ selectedModelName ? `账户余额计费 · ${selectedModelName}` : '请选择号池可用模型' }}</span>
             <span v-if="lastUsage">本次 {{ lastUsage.total_tokens ?? 0 }} tokens</span>
           </div>
         </form>
@@ -193,13 +163,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Input from '@/components/common/Input.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { keysAPI } from '@/api/keys'
 import { chatAPI, type ChatCompletionUsage, type ChatMessage } from '@/api/chat'
+import { userChannelsAPI, type UserAvailableChannel } from '@/api/channels'
 import type { ApiKey } from '@/types'
 
 interface UiMessage extends ChatMessage {
@@ -215,42 +186,42 @@ interface Conversation {
   messages: UiMessage[]
 }
 
-interface ApiKeyOption extends SelectOption {
-  key: ApiKey
-  platformLabel: string
-  quotaLabel: string
+interface ChatModelOption extends SelectOption {
+  value: string
+  label: string
+  model: string
+  platform: string
+  groupIds: number[]
 }
+
+const MAX_CONVERSATIONS = 10
+const MAX_CONTEXT_MESSAGES = 10
 
 const starterPrompts = [
   '帮我把这件事拆成三步执行计划',
-  '把这段内容改得更清楚',
+  '把这段内容改得更清晰',
   '写一段可以直接发给客户的说明'
 ]
 
 const apiKeys = ref<ApiKey[]>([])
-const gatewayModelsByKeyId = ref<Record<number, string[]>>({})
-const selectedKeyId = ref<number | null>(null)
+const channelModels = ref<ChatModelOption[]>([])
 const selectedModel = ref('')
 const conversations = ref<Conversation[]>([createConversation('新对话')])
 const activeConversationId = ref(conversations.value[0].id)
 const conversationSearch = ref('')
 const draft = ref('')
-const loadingKeys = ref(false)
-const loadingModels = ref(false)
+const loading = ref(false)
 const sending = ref(false)
 const errorMessage = ref('')
 const lastUsage = ref<ChatCompletionUsage | null>(null)
 const messagesRef = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
-let modelLoadSeq = 0
 
 const activeConversation = computed(() =>
   conversations.value.find((item) => item.id === activeConversationId.value) ?? null
 )
 
 const messages = computed(() => activeConversation.value?.messages ?? [])
-
-const selectedKey = computed(() => apiKeys.value.find((item) => item.id === selectedKeyId.value) ?? null)
 const activeKeys = computed(() => apiKeys.value.filter((item) => item.status === 'active'))
 
 const filteredConversations = computed(() => {
@@ -261,30 +232,17 @@ const filteredConversations = computed(() => {
   )
 })
 
-const apiKeyOptions = computed<ApiKeyOption[]>(() =>
-  activeKeys.value.map((item) => ({
-    value: item.id,
-    label: item.name,
-    key: item,
-    platformLabel: platformLabel(item.group?.platform),
-    quotaLabel: item.quota > 0
-      ? `$${item.quota_used.toFixed(2)} / $${item.quota.toFixed(2)}`
-      : '不限额'
-  }))
+const modelOptions = computed<ChatModelOption[]>(() => channelModels.value)
+const selectedModelOption = computed(() =>
+  modelOptions.value.find((item) => item.value === selectedModel.value) ?? null
 )
+const selectedModelName = computed(() => selectedModelOption.value?.model ?? '')
 
-const modelOptions = computed<SelectOption[]>(() => {
-  return availableModelsForKey(selectedKey.value).map((name) => ({ value: name, label: name }))
-})
+const selectedKey = computed(() => selectKeyForModel(selectedModelOption.value))
 
 const canSend = computed(() =>
-  Boolean(selectedKey.value?.key && selectedModel.value.trim() && draft.value.trim() && !sending.value)
+  Boolean(selectedKey.value?.key && selectedModelName.value && draft.value.trim() && !sending.value)
 )
-
-function availableModelsForKey(key: ApiKey | null): string[] {
-  if (!key) return []
-  return gatewayModelsByKeyId.value[key.id] ?? []
-}
 
 function createConversation(title: string): Conversation {
   return {
@@ -312,23 +270,15 @@ function formatTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-function onKeyChange(_value: string | number | boolean | null, option: SelectOption | null) {
-  const key = (option as ApiKeyOption | null)?.key ?? selectedKey.value
-  selectedModel.value = firstModelForKey(key)
-}
-
 function onModelSelect(value: string | number | boolean | null) {
   selectedModel.value = String(value ?? '')
 }
 
-function firstModelForKey(key: ApiKey | null): string {
-  return availableModelsForKey(key)[0] ?? ''
-}
-
 function startNewChat() {
   const conversation = createConversation('新对话')
-  conversation.model = selectedModel.value
+  conversation.model = selectedModelName.value
   conversations.value.unshift(conversation)
+  trimConversations()
   activeConversationId.value = conversation.id
   draft.value = ''
   errorMessage.value = ''
@@ -338,7 +288,31 @@ function startNewChat() {
 function selectConversation(id: string) {
   activeConversationId.value = id
   errorMessage.value = ''
-  nextTick(scrollToBottom)
+  void nextTick(scrollToBottom)
+}
+
+function deleteConversation(id: string) {
+  const index = conversations.value.findIndex((item) => item.id === id)
+  if (index < 0) return
+
+  conversations.value.splice(index, 1)
+  if (conversations.value.length === 0) {
+    conversations.value.push(createConversation('新对话'))
+  }
+  if (activeConversationId.value === id) {
+    activeConversationId.value = conversations.value[Math.min(index, conversations.value.length - 1)].id
+  }
+  errorMessage.value = ''
+  lastUsage.value = null
+  void nextTick(scrollToBottom)
+}
+
+function trimConversations() {
+  if (conversations.value.length <= MAX_CONVERSATIONS) return
+  conversations.value.splice(MAX_CONVERSATIONS)
+  if (!conversations.value.some((item) => item.id === activeConversationId.value)) {
+    activeConversationId.value = conversations.value[0].id
+  }
 }
 
 function resetActiveConversation() {
@@ -356,25 +330,41 @@ function useStarterPrompt(prompt: string) {
 }
 
 function toGatewayMessages(): ChatMessage[] {
-  return messages.value.map((message) => ({
-    role: message.role,
-    content: message.content
-  }))
+  return messages.value
+    .slice(-MAX_CONTEXT_MESSAGES)
+    .map((message) => ({
+      role: message.role,
+      content: message.content
+    }))
 }
 
 function addMessage(role: ChatMessage['role'], content: string) {
-  if (!activeConversation.value) return
-  activeConversation.value.messages.push({
+  if (!activeConversation.value) return null
+
+  const message: UiMessage = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     role,
     content
-  })
-  activeConversation.value.preview = content
-  activeConversation.value.model = selectedModel.value
+  }
+  activeConversation.value.messages.push(message)
+  touchConversation(content, role)
+  return message
+}
+
+function touchConversation(content: string, role: ChatMessage['role']) {
+  if (!activeConversation.value) return
+  activeConversation.value.preview = content || activeConversation.value.preview
+  activeConversation.value.model = selectedModelName.value
   activeConversation.value.updatedAt = formatTime(new Date())
   if (role === 'user' && activeConversation.value.title === '新对话') {
     activeConversation.value.title = content.slice(0, 18) || '新对话'
   }
+}
+
+function appendAssistantMessage(message: UiMessage, delta: string) {
+  message.content += delta
+  touchConversation(message.content, 'assistant')
+  void scrollToBottom()
 }
 
 function parsePositiveNumber(value: string, fallback: number): number {
@@ -383,36 +373,53 @@ function parsePositiveNumber(value: string, fallback: number): number {
 }
 
 async function sendMessage() {
-  if (!canSend.value || !selectedKey.value) return
+  if (!canSend.value || !selectedKey.value) {
+    if (!selectedKey.value) {
+      errorMessage.value = '当前模型没有匹配到可用 API Key，请先在密钥页创建一个可访问该分组的 Key。'
+    }
+    return
+  }
 
   const content = draft.value.trim()
   draft.value = ''
   errorMessage.value = ''
   lastUsage.value = null
   addMessage('user', content)
+  const requestMessages = toGatewayMessages()
+  const assistantMessage = addMessage('assistant', '')
   await scrollToBottom()
+
+  if (!assistantMessage) return
 
   abortController = new AbortController()
   sending.value = true
 
   try {
-    const response = await chatAPI.createChatCompletion({
+    const usage = await chatAPI.createChatCompletionStream({
       apiKey: selectedKey.value.key,
-      model: selectedModel.value.trim(),
-      messages: toGatewayMessages(),
+      model: selectedModelOption.value?.model ?? selectedModel.value.trim(),
+      messages: requestMessages,
       temperature: 0.7,
       max_tokens: Math.round(parsePositiveNumber('2048', 2048)),
       signal: abortController.signal
+    }, {
+      onDelta: (delta) => appendAssistantMessage(assistantMessage, delta),
+      onUsage: (nextUsage) => {
+        lastUsage.value = nextUsage
+      }
     })
 
-    const reply = response.choices?.[0]?.message?.content?.trim()
-    addMessage('assistant', reply || '模型没有返回可显示的内容。')
-    lastUsage.value = response.usage ?? null
+    if (!assistantMessage.content.trim()) {
+      assistantMessage.content = '模型没有返回可显示的内容。'
+      touchConversation(assistantMessage.content, 'assistant')
+    }
+    lastUsage.value = usage ?? lastUsage.value
     await refreshSelectedKey()
   } catch (error) {
     const message = error instanceof Error ? error.message : '发送失败，请稍后重试。'
     errorMessage.value = message
-    addMessage('assistant', `请求失败：${message}`)
+    assistantMessage.content = `请求失败：${message}`
+    touchConversation(assistantMessage.content, 'assistant')
   } finally {
     sending.value = false
     abortController = null
@@ -427,60 +434,76 @@ async function scrollToBottom() {
   }
 }
 
-async function loadApiKeys() {
-  loadingKeys.value = true
-  try {
-    const result = await keysAPI.list(1, 100, { status: 'active', sort_by: 'created_at', sort_order: 'desc' })
-    apiKeys.value = result.items
-    if (!selectedKeyId.value && activeKeys.value.length > 0) {
-      selectedKeyId.value = activeKeys.value[0].id
-      selectedModel.value = firstModelForKey(activeKeys.value[0])
-    }
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '加载密钥失败。'
-  } finally {
-    loadingKeys.value = false
-  }
-}
+function normalizeChannelModels(channels: UserAvailableChannel[]): ChatModelOption[] {
+  const byKey = new Map<string, ChatModelOption>()
 
-async function loadModelsForKey(key: ApiKey | null) {
-  if (!key?.key) {
-    modelLoadSeq += 1
-    loadingModels.value = false
-    selectedModel.value = ''
-    return
-  }
+  for (const channel of channels) {
+    for (const section of channel.platforms) {
+      const groupIds = section.groups.map((group) => group.id)
+      for (const model of section.supported_models) {
+        const name = model.name.trim()
+        const platform = model.platform || section.platform
+        if (!name || !platform) continue
 
-  const seq = ++modelLoadSeq
-  loadingModels.value = true
+        const key = `${platform}:${name}`
+        const existing = byKey.get(key)
+        if (existing) {
+          existing.groupIds = Array.from(new Set([...existing.groupIds, ...groupIds]))
+          continue
+        }
 
-  try {
-    const models = await chatAPI.listModels(key.key)
-    gatewayModelsByKeyId.value = {
-      ...gatewayModelsByKeyId.value,
-      [key.id]: models
-    }
-
-    if (seq === modelLoadSeq && selectedKeyId.value === key.id) {
-      selectedModel.value = models.includes(selectedModel.value) ? selectedModel.value : (models[0] ?? '')
-      if (errorMessage.value.startsWith('加载模型失败：') || errorMessage.value === '加载模型失败。') {
-        errorMessage.value = ''
+        byKey.set(key, {
+          value: key,
+          label: `${name} · ${platformLabel(platform)}`,
+          model: name,
+          platform,
+          groupIds
+        })
       }
     }
-  } catch (error) {
-    gatewayModelsByKeyId.value = {
-      ...gatewayModelsByKeyId.value,
-      [key.id]: []
-    }
+  }
 
-    if (seq === modelLoadSeq && selectedKeyId.value === key.id) {
-      selectedModel.value = ''
-      errorMessage.value = error instanceof Error ? `加载模型失败：${error.message}` : '加载模型失败。'
+  return Array.from(byKey.values()).sort((a, b) => a.label.localeCompare(b.label))
+}
+
+function selectKeyForModel(option: ChatModelOption | null): ApiKey | null {
+  if (!option) return null
+
+  const pickBestKey = (keys: ApiKey[]) =>
+    keys.slice().sort((a, b) => keyRemainingQuota(b) - keyRemainingQuota(a))[0] ?? null
+
+  const groupMatches = activeKeys.value.filter((key) =>
+    typeof key.group_id === 'number' && option.groupIds.includes(key.group_id)
+  )
+  const byGroup = pickBestKey(groupMatches)
+  if (byGroup) return byGroup
+
+  return pickBestKey(activeKeys.value.filter((key) => key.group?.platform === option.platform))
+}
+
+function keyRemainingQuota(key: ApiKey): number {
+  if (key.quota <= 0) return Number.POSITIVE_INFINITY
+  return Math.max(0, key.quota - key.quota_used)
+}
+
+async function loadChatData() {
+  loading.value = true
+  try {
+    const [keysResult, channels] = await Promise.all([
+      keysAPI.list(1, 100, { status: 'active', sort_by: 'created_at', sort_order: 'desc' }),
+      userChannelsAPI.getAvailable()
+    ])
+
+    apiKeys.value = keysResult.items
+    channelModels.value = normalizeChannelModels(channels)
+    if (!channelModels.value.some((item) => item.value === selectedModel.value)) {
+      selectedModel.value = channelModels.value[0]?.value ?? ''
     }
+    errorMessage.value = ''
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '加载模型失败。'
   } finally {
-    if (seq === modelLoadSeq) {
-      loadingModels.value = false
-    }
+    loading.value = false
   }
 }
 
@@ -493,28 +516,12 @@ async function refreshSelectedKey() {
       apiKeys.value.splice(index, 1, updated)
     }
   } catch {
-    // Keep the chat response visible even if quota refresh fails.
+    // Keep the streamed response visible even if quota refresh fails.
   }
 }
 
-watch(selectedKey, (key) => {
-  selectedModel.value = firstModelForKey(key)
-  void loadModelsForKey(key)
-})
-
-watch(modelOptions, (options) => {
-  const values = options.map((option) => String(option.value ?? ''))
-  if (values.length === 0) {
-    selectedModel.value = ''
-    return
-  }
-  if (!values.includes(selectedModel.value)) {
-    selectedModel.value = values[0]
-  }
-})
-
 onMounted(async () => {
-  await loadApiKeys()
+  await loadChatData()
 })
 
 onBeforeUnmount(() => {
@@ -552,7 +559,7 @@ onBeforeUnmount(() => {
 }
 
 .conversation-item {
-  @apply flex w-full gap-3 rounded-lg border border-transparent px-3 py-3 transition hover:border-gray-200 hover:bg-white dark:hover:border-dark-700 dark:hover:bg-dark-900;
+  @apply flex w-full items-start gap-2 rounded-lg border border-transparent px-3 py-3 transition hover:border-gray-200 hover:bg-white dark:hover:border-dark-700 dark:hover:bg-dark-900;
 }
 
 .conversation-item-active {
@@ -561,6 +568,15 @@ onBeforeUnmount(() => {
 
 .conversation-icon {
   @apply mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary-50 text-primary-600 dark:bg-primary-900/30 dark:text-primary-200;
+}
+
+.conversation-delete {
+  @apply mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-gray-400 opacity-0 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed dark:hover:bg-red-900/20;
+}
+
+.conversation-item:hover .conversation-delete,
+.conversation-item-active .conversation-delete {
+  @apply opacity-100;
 }
 
 .message-row {
