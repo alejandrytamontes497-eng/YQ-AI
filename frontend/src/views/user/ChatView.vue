@@ -163,14 +163,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Input from '@/components/common/Input.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { keysAPI } from '@/api/keys'
 import { chatAPI, type ChatCompletionUsage, type ChatMessage } from '@/api/chat'
-import { userChannelsAPI, type UserAvailableChannel } from '@/api/channels'
+import { useAuthStore } from '@/stores/auth'
 import type { ApiKey } from '@/types'
 
 interface UiMessage extends ChatMessage {
@@ -195,8 +195,23 @@ interface ChatModelOption extends SelectOption {
   keyIds: number[]
 }
 
+interface ChatChannelModelSource {
+  platforms: Array<{
+    platform: string
+    groups: Array<{ id: number }>
+    supported_models: Array<{ name: string; platform?: string }>
+  }>
+}
+
+interface PersistedChatState {
+  activeConversationId: string
+  selectedModel: string
+  conversations: Conversation[]
+}
+
 const MAX_CONVERSATIONS = 10
 const MAX_CONTEXT_MESSAGES = 10
+const CHAT_HISTORY_STORAGE_PREFIX = 'chat_history_v1'
 
 const starterPrompts = [
   '帮我把这件事拆成三步执行计划',
@@ -217,6 +232,8 @@ const errorMessage = ref('')
 const lastUsage = ref<ChatCompletionUsage | null>(null)
 const messagesRef = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
+const authStore = useAuthStore()
+let restoringHistory = true
 
 const activeConversation = computed(() =>
   conversations.value.find((item) => item.id === activeConversationId.value) ?? null
@@ -242,7 +259,7 @@ const selectedModelName = computed(() => selectedModelOption.value?.model ?? '')
 const selectedKey = computed(() => selectKeyForModel(selectedModelOption.value))
 
 const canSend = computed(() =>
-  Boolean(selectedKey.value?.key && selectedModelName.value && draft.value.trim() && !sending.value)
+  Boolean(selectedKey.value?.key && hasExactKeyForModel(selectedModelOption.value) && draft.value.trim() && !sending.value)
 )
 
 function createConversation(title: string): Conversation {
@@ -253,6 +270,100 @@ function createConversation(title: string): Conversation {
     model: '',
     updatedAt: formatTime(new Date()),
     messages: []
+  }
+}
+
+function storageKey(): string {
+  const userID = authStore.user?.id ?? storedUserID() ?? 'anonymous'
+  return `${CHAT_HISTORY_STORAGE_PREFIX}:${userID}`
+}
+
+function storedUserID(): number | string | null {
+  try {
+    const raw = localStorage.getItem('auth_user')
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { id?: number | string } | null
+    return parsed?.id ?? null
+  } catch {
+    return null
+  }
+}
+
+function sanitizeConversation(conversation: Partial<Conversation> | null | undefined): Conversation | null {
+  if (!conversation || typeof conversation !== 'object') return null
+
+  const messages = Array.isArray(conversation.messages)
+    ? conversation.messages
+        .filter((message): message is UiMessage =>
+          message &&
+          (message.role === 'system' || message.role === 'user' || message.role === 'assistant') &&
+          typeof message.content === 'string'
+        )
+        .slice(-MAX_CONTEXT_MESSAGES)
+        .map((message) => ({
+          id: typeof message.id === 'string' && message.id ? message.id : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          role: message.role,
+          content: message.content
+        }))
+    : []
+
+  return {
+    id: typeof conversation.id === 'string' && conversation.id ? conversation.id : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    title: typeof conversation.title === 'string' && conversation.title ? conversation.title : '新对话',
+    preview: typeof conversation.preview === 'string' ? conversation.preview : '',
+    model: typeof conversation.model === 'string' ? conversation.model : '',
+    updatedAt: typeof conversation.updatedAt === 'string' && conversation.updatedAt ? conversation.updatedAt : formatTime(new Date()),
+    messages
+  }
+}
+
+function normalizeConversations(items: unknown): Conversation[] {
+  if (!Array.isArray(items)) return [createConversation('新对话')]
+
+  const normalized = items
+    .map((item) => sanitizeConversation(item as Partial<Conversation>))
+    .filter((item): item is Conversation => item !== null)
+    .slice(0, MAX_CONVERSATIONS)
+
+  return normalized.length > 0 ? normalized : [createConversation('新对话')]
+}
+
+function loadStoredChatHistory() {
+  restoringHistory = true
+  try {
+    const raw = localStorage.getItem(storageKey())
+    if (!raw) return
+
+    const parsed = JSON.parse(raw) as Partial<PersistedChatState>
+    const restoredConversations = normalizeConversations(parsed.conversations)
+    conversations.value = restoredConversations
+    activeConversationId.value = restoredConversations.some((item) => item.id === parsed.activeConversationId)
+      ? String(parsed.activeConversationId)
+      : restoredConversations[0].id
+    selectedModel.value = typeof parsed.selectedModel === 'string' ? parsed.selectedModel : ''
+  } catch {
+    localStorage.removeItem(storageKey())
+  } finally {
+    restoringHistory = false
+  }
+}
+
+function persistChatHistory() {
+  if (restoringHistory) return
+
+  const normalized = normalizeConversations(conversations.value)
+  const state: PersistedChatState = {
+    activeConversationId: normalized.some((item) => item.id === activeConversationId.value)
+      ? activeConversationId.value
+      : normalized[0].id,
+    selectedModel: selectedModel.value,
+    conversations: normalized
+  }
+
+  try {
+    localStorage.setItem(storageKey(), JSON.stringify(state))
+  } catch {
+    // Ignore storage quota/private-mode failures; the live chat should keep working.
   }
 }
 
@@ -284,11 +395,13 @@ function startNewChat() {
   draft.value = ''
   errorMessage.value = ''
   lastUsage.value = null
+  persistChatHistory()
 }
 
 function selectConversation(id: string) {
   activeConversationId.value = id
   errorMessage.value = ''
+  persistChatHistory()
   void nextTick(scrollToBottom)
 }
 
@@ -305,6 +418,7 @@ function deleteConversation(id: string) {
   }
   errorMessage.value = ''
   lastUsage.value = null
+  persistChatHistory()
   void nextTick(scrollToBottom)
 }
 
@@ -324,6 +438,7 @@ function resetActiveConversation() {
   activeConversation.value.updatedAt = formatTime(new Date())
   errorMessage.value = ''
   lastUsage.value = null
+  persistChatHistory()
 }
 
 function useStarterPrompt(prompt: string) {
@@ -348,8 +463,15 @@ function addMessage(role: ChatMessage['role'], content: string) {
     content
   }
   activeConversation.value.messages.push(message)
+  trimActiveConversationMessages()
   touchConversation(content, role)
   return message
+}
+
+function trimActiveConversationMessages() {
+  if (!activeConversation.value) return
+  if (activeConversation.value.messages.length <= MAX_CONTEXT_MESSAGES) return
+  activeConversation.value.messages.splice(0, activeConversation.value.messages.length - MAX_CONTEXT_MESSAGES)
 }
 
 function touchConversation(content: string, role: ChatMessage['role']) {
@@ -360,6 +482,7 @@ function touchConversation(content: string, role: ChatMessage['role']) {
   if (role === 'user' && activeConversation.value.title === '新对话') {
     activeConversation.value.title = content.slice(0, 18) || '新对话'
   }
+  persistChatHistory()
 }
 
 function appendAssistantMessage(message: UiMessage, delta: string) {
@@ -381,6 +504,12 @@ async function sendMessage() {
     return
   }
 
+  const requestModel = selectedModelOption.value?.model.trim()
+  if (!requestModel || !hasExactKeyForModel(selectedModelOption.value)) {
+    errorMessage.value = '当前模型不在号池返回的可用模型列表中，请刷新后重新选择。'
+    return
+  }
+
   const content = draft.value.trim()
   draft.value = ''
   errorMessage.value = ''
@@ -398,7 +527,7 @@ async function sendMessage() {
   try {
     const usage = await chatAPI.createChatCompletionStream({
       apiKey: selectedKey.value.key,
-      model: selectedModelOption.value?.model ?? selectedModel.value.trim(),
+      model: requestModel,
       messages: requestMessages,
       temperature: 0.7,
       max_tokens: Math.round(parsePositiveNumber('2048', 2048)),
@@ -435,7 +564,7 @@ async function scrollToBottom() {
   }
 }
 
-function normalizeChannelModels(channels: UserAvailableChannel[]): ChatModelOption[] {
+function normalizeChannelModels(channels: ChatChannelModelSource[]): ChatModelOption[] {
   const byKey = new Map<string, ChatModelOption>()
 
   for (const channel of channels) {
@@ -529,23 +658,22 @@ function mergeModelOptions(...sources: ChatModelOption[][]): ChatModelOption[] {
 }
 
 function selectKeyForModel(option: ChatModelOption | null): ApiKey | null {
-  if (!option) return null
+  if (!hasExactKeyForModel(option)) return null
 
   const pickBestKey = (keys: ApiKey[]) =>
     keys.slice().sort((a, b) => keyRemainingQuota(b) - keyRemainingQuota(a))[0] ?? null
 
   const directMatches = activeKeys.value.filter((key) => option.keyIds.includes(key.id))
-  const directKey = pickBestKey(directMatches)
-  if (directKey) return directKey
-
-  const groupMatches = activeKeys.value.filter((key) =>
-    typeof key.group_id === 'number' && option.groupIds.includes(key.group_id)
-  )
-  const byGroup = pickBestKey(groupMatches)
-  if (byGroup) return byGroup
-
-  return pickBestKey(activeKeys.value.filter((key) => key.group?.platform === option.platform))
+  return pickBestKey(directMatches)
 }
+
+function hasExactKeyForModel(option: ChatModelOption | null): option is ChatModelOption {
+  if (!option?.model.trim()) return false
+  return activeKeys.value.some((key) => option.keyIds.includes(key.id))
+}
+
+void normalizeChannelModels
+void hasExactKeyForModel
 
 function keyRemainingQuota(key: ApiKey): number {
   if (key.quota <= 0) return Number.POSITIVE_INFINITY
@@ -556,11 +684,9 @@ async function loadChatData() {
   loading.value = true
   try {
     const keysResult = await keysAPI.list(1, 100, { status: 'active', sort_by: 'created_at', sort_order: 'desc' })
-    const channels = await userChannelsAPI.getAvailable().catch(() => [])
 
     apiKeys.value = keysResult.items
-    const keyModels = await loadModelsFromKeys(activeKeys.value)
-    channelModels.value = mergeModelOptions(normalizeChannelModels(channels), keyModels)
+    channelModels.value = mergeModelOptions(await loadModelsFromKeys(activeKeys.value))
     if (!channelModels.value.some((item) => item.value === selectedModel.value)) {
       selectedModel.value = channelModels.value[0]?.value ?? ''
     }
@@ -585,7 +711,12 @@ async function refreshSelectedKey() {
   }
 }
 
+watch(selectedModel, () => {
+  persistChatHistory()
+})
+
 onMounted(async () => {
+  loadStoredChatHistory()
   await loadChatData()
 })
 
