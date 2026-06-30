@@ -6,22 +6,6 @@
 import { apiClient } from '../client'
 import type { AdminUser, UpdateUserRequest, PaginatedResponse, ApiKey } from '@/types'
 
-export interface CallAuditLog {
-  id: number
-  user_id: number
-  api_key_id: number
-  account_id?: number | null
-  group_id?: number | null
-  request_id: string
-  method: string
-  path: string
-  model: string
-  status_code: number
-  request_excerpt: string
-  response_excerpt: string
-  created_at: string
-}
-
 export interface AdminBindAuthIdentityChannelRequest {
   channel: string
   channel_app_id: string
@@ -244,16 +228,6 @@ export async function getUserUsageStats(
 }
 
 /**
- * Get latest lightweight call audit records for a user.
- * @param id - User ID
- * @returns Latest 10 call audit rows
- */
-export async function getUserCallAudits(id: number): Promise<CallAuditLog[]> {
-  const { data } = await apiClient.get<CallAuditLog[]>(`/admin/users/${id}/call-audits`)
-  return data
-}
-
-/**
  * Balance history item returned from the API
  */
 export interface BalanceHistoryItem {
@@ -413,7 +387,6 @@ export const usersAPI = {
   toggleStatus,
   getUserApiKeys,
   getUserUsageStats,
-  getUserCallAudits,
   getUserBalanceHistory,
   replaceGroup,
   bindUserAuthIdentity,

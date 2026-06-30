@@ -139,6 +139,7 @@ export async function createChatCompletionStream(
   const decoder = new TextDecoder()
   let buffer = ''
   let usage: ChatCompletionUsage | null = null
+  let hasStreamContent = false
 
   const handleLine = (line: string) => {
     const trimmed = line.trim()
@@ -149,17 +150,30 @@ export async function createChatCompletionStream(
 
     const body = parseJsonBody(data)
     const delta = readStreamDelta(body)
-    if (delta) callbacks.onDelta?.(delta)
+    if (delta) {
+      hasStreamContent = true
+      callbacks.onDelta?.(delta)
+    }
 
     const nextUsage = readStreamUsage(body)
     if (nextUsage) {
+      hasStreamContent = true
       usage = nextUsage
       callbacks.onUsage?.(nextUsage)
     }
   }
 
   while (true) {
-    const { value, done } = await reader.read()
+    let result: ReadableStreamReadResult<Uint8Array>
+    try {
+      result = await reader.read()
+    } catch (error) {
+      if (hasStreamContent) {
+        return usage
+      }
+      throw error
+    }
+    const { value, done } = result
     if (done) break
 
     buffer += decoder.decode(value, { stream: true })

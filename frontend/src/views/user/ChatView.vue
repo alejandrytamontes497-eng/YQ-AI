@@ -1,11 +1,14 @@
 <template>
   <AppLayout>
     <div class="chat-shell">
-      <aside class="chat-sidebar">
-        <div class="flex items-center justify-between px-5 pt-5">
+      <aside v-show="!sidebarCollapsed" class="chat-sidebar">
+        <div class="flex items-center gap-2 px-5 pt-5">
           <h1 class="text-xl font-semibold text-gray-950 dark:text-white">在线聊天</h1>
           <button class="icon-button" type="button" title="刷新模型" :disabled="loading" @click="loadChatData">
             <Icon name="refresh" size="sm" />
+          </button>
+          <button class="icon-button" type="button" title="收起侧边栏" @click="setSidebarCollapsed(true)">
+            <Icon name="chevronLeft" size="sm" />
           </button>
         </div>
 
@@ -57,7 +60,16 @@
         </div>
       </aside>
 
-      <section class="chat-main">
+      <section class="chat-main" :class="{ 'chat-main-sidebar-collapsed': sidebarCollapsed }">
+        <button
+          v-if="sidebarCollapsed"
+          class="sidebar-expand-button"
+          type="button"
+          title="展开侧边栏"
+          @click="setSidebarCollapsed(false)"
+        >
+          <Icon name="menu" size="sm" />
+        </button>
         <header class="chat-header">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
@@ -128,7 +140,29 @@
               <Icon :name="message.role === 'user' ? 'user' : 'sparkles'" size="sm" />
             </div>
             <div class="message-bubble" :class="message.role === 'user' ? 'message-bubble-user' : 'message-bubble-assistant'">
-              <div class="whitespace-pre-wrap break-words">{{ message.content || '正在生成回复...' }}</div>
+              <button
+                v-if="message.content"
+                class="message-copy-button"
+                type="button"
+                :title="copiedTarget === `${message.id}:full` ? '已复制' : '复制全文'"
+                @click="copyMessageContent(message)"
+              >
+                <Icon :name="copiedTarget === `${message.id}:full` ? 'check' : 'copy'" size="xs" :stroke-width="2" />
+              </button>
+              <div class="message-content whitespace-pre-wrap break-words">{{ message.content || '正在生成回复...' }}</div>
+              <div v-if="copySegmentsForMessage(message).length > 0" class="message-segment-actions">
+                <button
+                  v-for="segment in copySegmentsForMessage(message)"
+                  :key="segment.id"
+                  class="message-segment-copy"
+                  type="button"
+                  :title="copiedTarget === segment.id ? '已复制' : segment.title"
+                  @click="copySegment(segment)"
+                >
+                  <Icon :name="copiedTarget === segment.id ? 'check' : 'copy'" size="xs" :stroke-width="2" />
+                  <span>{{ copiedTarget === segment.id ? '已复制' : segment.label }}</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -195,15 +229,25 @@ interface ChatModelOption extends SelectOption {
   keyIds: number[]
 }
 
+interface CopySegment {
+  id: string
+  label: string
+  title: string
+  content: string
+  type: 'code' | 'xml'
+}
+
 interface PersistedChatState {
   activeConversationId: string
   selectedModel: string
   conversations: Conversation[]
 }
 
-const MAX_CONVERSATIONS = 10
+const MAX_CONVERSATIONS = 100
+const MAX_LOCAL_MESSAGES = 100
 const MAX_CONTEXT_MESSAGES = 10
 const CHAT_HISTORY_STORAGE_PREFIX = 'chat_history_v1'
+const CHAT_SIDEBAR_COLLAPSED_KEY = 'chat_sidebar_collapsed'
 const STREAM_RENDER_MAX_CHARS_PER_FRAME = 160
 
 const starterPrompts = [
@@ -225,12 +269,15 @@ const sending = ref(false)
 const errorMessage = ref('')
 const lastUsage = ref<ChatCompletionUsage | null>(null)
 const messagesRef = ref<HTMLElement | null>(null)
+const copiedTarget = ref('')
+const sidebarCollapsed = ref(loadSidebarCollapsed())
 let abortController: AbortController | null = null
 let streamRenderFrame: number | null = null
 let streamScrollFrame: number | null = null
 let streamAssistantMessage: UiMessage | null = null
 let streamDeltaBuffer = ''
 let streamDrainResolvers: Array<() => void> = []
+let copyFeedbackTimer: number | null = null
 const authStore = useAuthStore()
 let restoringHistory = true
 
@@ -288,6 +335,23 @@ function storedUserID(): number | string | null {
   }
 }
 
+function loadSidebarCollapsed(): boolean {
+  try {
+    return localStorage.getItem(CHAT_SIDEBAR_COLLAPSED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function setSidebarCollapsed(collapsed: boolean) {
+  sidebarCollapsed.value = collapsed
+  try {
+    localStorage.setItem(CHAT_SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0')
+  } catch {
+    // Ignore storage failures; the current UI state still updates.
+  }
+}
+
 function sanitizeConversation(conversation: Partial<Conversation> | null | undefined): Conversation | null {
   if (!conversation || typeof conversation !== 'object') return null
 
@@ -298,7 +362,7 @@ function sanitizeConversation(conversation: Partial<Conversation> | null | undef
           (message.role === 'system' || message.role === 'user' || message.role === 'assistant') &&
           typeof message.content === 'string'
         )
-        .slice(-MAX_CONTEXT_MESSAGES)
+        .slice(-MAX_LOCAL_MESSAGES)
         .map((message) => ({
           id: typeof message.id === 'string' && message.id ? message.id : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
           role: message.role,
@@ -444,6 +508,127 @@ function useStarterPrompt(prompt: string) {
   draft.value = prompt
 }
 
+async function copyMessageContent(message: UiMessage) {
+  if (!message.content) return
+  await copyText(message.content, `${message.id}:full`)
+}
+
+async function copySegment(segment: CopySegment) {
+  await copyText(segment.content, segment.id)
+}
+
+async function copyText(text: string, target: string) {
+  const value = text.trim()
+  if (!value) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+    } else {
+      fallbackCopyText(value)
+    }
+    showCopied(target)
+  } catch {
+    fallbackCopyText(value)
+    showCopied(target)
+  }
+}
+
+function fallbackCopyText(text: string) {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand('copy')
+  document.body.removeChild(textarea)
+}
+
+function showCopied(target: string) {
+  copiedTarget.value = target
+  if (copyFeedbackTimer !== null) {
+    window.clearTimeout(copyFeedbackTimer)
+  }
+  copyFeedbackTimer = window.setTimeout(() => {
+    copiedTarget.value = ''
+    copyFeedbackTimer = null
+  }, 1400)
+}
+
+function copySegmentsForMessage(message: UiMessage): CopySegment[] {
+  return extractCopySegments(message.content).map((segment, index) => ({
+    ...segment,
+    id: `${message.id}:segment:${index}`
+  }))
+}
+
+function extractCopySegments(content: string): Omit<CopySegment, 'id'>[] {
+  const text = content.trim()
+  if (!text) return []
+
+  const segments: Omit<CopySegment, 'id'>[] = []
+  const ranges: Array<[number, number]> = []
+  const fencedPattern = /```([^\n`]*)\n?([\s\S]*?)```/g
+  let fencedMatch: RegExpExecArray | null
+  while ((fencedMatch = fencedPattern.exec(content)) !== null) {
+    const language = fencedMatch[1]?.trim()
+    const body = fencedMatch[2]?.replace(/^\n|\n$/g, '').trim()
+    if (!body) continue
+    const type = isXmlText(body) || language?.toLowerCase().includes('xml') ? 'xml' : 'code'
+    segments.push({
+      type,
+      label: type === 'xml' ? `复制 XML ${segments.length + 1}` : `复制代码 ${segments.length + 1}`,
+      title: type === 'xml' ? '复制该 XML 片段' : '复制该代码片段',
+      content: body
+    })
+    ranges.push([fencedMatch.index, fencedMatch.index + fencedMatch[0].length])
+  }
+
+  const xmlPattern = /(?:<\?xml[\s\S]*?\?>\s*)?<([A-Za-z_][\w:.-]*)(?:\s[^<>]*)?>[\s\S]*?<\/\1>/g
+  let xmlMatch: RegExpExecArray | null
+  while ((xmlMatch = xmlPattern.exec(content)) !== null) {
+    const start = xmlMatch.index
+    const end = start + xmlMatch[0].length
+    if (ranges.some(([from, to]) => start >= from && end <= to)) continue
+    const xml = xmlMatch[0].trim()
+    if (!isXmlText(xml)) continue
+    segments.push({
+      type: 'xml',
+      label: `复制 XML ${segments.length + 1}`,
+      title: '复制该 XML 片段',
+      content: xml
+    })
+  }
+
+  if (segments.length === 0 && looksLikeStandaloneCode(text)) {
+    segments.push({
+      type: isXmlText(text) ? 'xml' : 'code',
+      label: isXmlText(text) ? '复制 XML 1' : '复制代码 1',
+      title: isXmlText(text) ? '复制该 XML 片段' : '复制该代码片段',
+      content: text
+    })
+  }
+
+  return segments
+}
+
+function isXmlText(text: string): boolean {
+  const value = text.trim()
+  return /^<\?xml[\s\S]*\?>/.test(value) || /^<([A-Za-z_][\w:.-]*)(?:\s[^<>]*)?>[\s\S]*<\/\1>$/.test(value)
+}
+
+function looksLikeStandaloneCode(text: string): boolean {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  if (lines.length < 2) return false
+  if (isXmlText(text)) return true
+  const codeLineCount = lines.filter((line) =>
+    /[{};=<>]/.test(line) ||
+    /^(import|export|const|let|var|function|class|interface|type|def|async|await|return|if|for|while|try|catch|package|func)\b/.test(line)
+  ).length
+  return codeLineCount >= Math.min(3, lines.length)
+}
+
 function toGatewayMessages(): ChatMessage[] {
   return messages.value
     .slice(-MAX_CONTEXT_MESSAGES)
@@ -469,8 +654,8 @@ function addMessage(role: ChatMessage['role'], content: string) {
 
 function trimActiveConversationMessages() {
   if (!activeConversation.value) return
-  if (activeConversation.value.messages.length <= MAX_CONTEXT_MESSAGES) return
-  activeConversation.value.messages.splice(0, activeConversation.value.messages.length - MAX_CONTEXT_MESSAGES)
+  if (activeConversation.value.messages.length <= MAX_LOCAL_MESSAGES) return
+  activeConversation.value.messages.splice(0, activeConversation.value.messages.length - MAX_LOCAL_MESSAGES)
 }
 
 function touchConversation(content: string, role: ChatMessage['role'], options: { persist?: boolean } = {}) {
@@ -624,6 +809,10 @@ async function sendMessage() {
   } catch (error) {
     flushStreamDeltaNow()
     const message = error instanceof Error ? error.message : '发送失败，请稍后重试。'
+    if (assistantMessage.content.trim()) {
+      touchConversation(assistantMessage.content, 'assistant')
+      return
+    }
     errorMessage.value = message
     assistantMessage.content = `请求失败：${message}`
     touchConversation(assistantMessage.content, 'assistant')
@@ -848,6 +1037,10 @@ onBeforeUnmount(() => {
     window.cancelAnimationFrame(streamScrollFrame)
     streamScrollFrame = null
   }
+  if (copyFeedbackTimer !== null) {
+    window.clearTimeout(copyFeedbackTimer)
+    copyFeedbackTimer = null
+  }
 })
 </script>
 
@@ -860,12 +1053,24 @@ onBeforeUnmount(() => {
   @apply hidden w-[286px] shrink-0 flex-col border-r border-gray-200 bg-gray-50 dark:border-dark-700 dark:bg-dark-950 lg:flex;
 }
 
+.chat-sidebar h1 {
+  @apply mr-auto;
+}
+
 .chat-main {
-  @apply flex min-w-0 flex-1 flex-col bg-white dark:bg-dark-900;
+  @apply relative flex min-w-0 flex-1 flex-col bg-white dark:bg-dark-900;
 }
 
 .chat-header {
   @apply grid gap-4 border-b border-gray-200 px-5 py-4 dark:border-dark-700 xl:grid-cols-[minmax(180px,360px)_1fr] xl:items-center;
+}
+
+.chat-main-sidebar-collapsed .chat-header {
+  @apply lg:pl-16;
+}
+
+.sidebar-expand-button {
+  @apply absolute left-4 top-4 z-20 hidden h-9 w-9 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-600 shadow-sm transition hover:bg-gray-50 hover:text-primary-600 dark:border-dark-700 dark:bg-dark-800 dark:text-gray-300 dark:hover:bg-dark-700 lg:flex;
 }
 
 .chat-messages {
@@ -926,7 +1131,27 @@ onBeforeUnmount(() => {
 }
 
 .message-bubble {
-  @apply max-w-[min(760px,calc(100%-3rem))] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm;
+  @apply relative max-w-[min(760px,calc(100%-3rem))] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm;
+}
+
+.message-copy-button {
+  @apply absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md opacity-0 transition hover:bg-black/5 focus:opacity-100 dark:hover:bg-white/10;
+}
+
+.message-bubble:hover .message-copy-button {
+  @apply opacity-100;
+}
+
+.message-content {
+  @apply pr-8;
+}
+
+.message-segment-actions {
+  @apply mt-3 flex flex-wrap gap-2 border-t border-black/10 pt-3 dark:border-white/10;
+}
+
+.message-segment-copy {
+  @apply inline-flex items-center gap-1.5 rounded-md border border-black/10 bg-white/70 px-2.5 py-1 text-xs font-medium text-gray-700 transition hover:border-primary-300 hover:text-primary-700 dark:border-white/10 dark:bg-dark-900/70 dark:text-gray-200 dark:hover:border-primary-700 dark:hover:text-primary-300;
 }
 
 .message-bubble-user {
