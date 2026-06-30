@@ -7,7 +7,6 @@ export interface UserImageModel {
 }
 
 export interface ImageGenerationRequest {
-  apiKey: string
   model: string
   prompt: string
   size: string
@@ -26,20 +25,6 @@ export interface GeneratedImageItem {
 export interface ImageGenerationResponse {
   created?: number
   data?: GeneratedImageItem[]
-}
-
-function parseJsonBody(text: string): any {
-  if (!text) return null
-
-  try {
-    return JSON.parse(text)
-  } catch {
-    return { error: { message: text } }
-  }
-}
-
-function errorMessageFromBody(body: any, fallback: string): string {
-  return body?.error?.message || body?.message || body?.detail || fallback
 }
 
 export async function listUserImageModels(signal?: AbortSignal): Promise<UserImageModel[]> {
@@ -62,24 +47,11 @@ export async function generateImage(request: ImageGenerationRequest): Promise<Im
     payload.quality = 'auto'
   }
 
-  const response = await fetch('/v1/images/generations', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${request.apiKey}`
-    },
-    body: JSON.stringify(payload),
-    signal: request.signal
+  const { data } = await apiClient.post<ImageGenerationResponse>('/user/images/generations', payload, {
+    signal: request.signal,
+    timeout: 300000
   })
-
-  const text = await response.text()
-  const body = parseJsonBody(text)
-
-  if (!response.ok) {
-    throw new Error(errorMessageFromBody(body, `Image generation failed with HTTP ${response.status}`))
-  }
-
-  return body as ImageGenerationResponse
+  return data
 }
 
 export const imagesAPI = {

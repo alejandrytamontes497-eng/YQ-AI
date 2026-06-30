@@ -455,6 +455,8 @@ export default {
     missingRequired: '请填写提示词并选择可用模型',
     emptyResponse: '生成成功但没有返回图片',
     generateFailed: '生成失败，请稍后重试',
+    networkFailed: '生图请求失败，请确认后端服务正在运行后重试。',
+    timeout: '生图耗时过长，请稍后重试或减少生成数量。',
     generateSuccess: '已生成 {count} 张图片',
     waiting: '正在生成图片，请稍候...',
     empty: '生成后的图片会出现在这里'

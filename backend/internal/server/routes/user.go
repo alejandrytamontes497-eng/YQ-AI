@@ -14,6 +14,7 @@ func RegisterUserRoutes(
 	h *handler.Handlers,
 	jwtAuth middleware.JWTAuthMiddleware,
 	settingService *service.SettingService,
+	subscriptionService *service.SubscriptionService,
 ) {
 	authenticated := v1.Group("")
 	authenticated.Use(gin.HandlerFunc(jwtAuth))
@@ -35,6 +36,12 @@ func RegisterUserRoutes(
 			user.GET("/platform-quotas", h.User.GetMyPlatformQuotas)
 			user.GET("/chat/models", h.Gateway.UserChatModels)
 			user.GET("/images/models", h.Gateway.UserImageModels)
+			user.POST("/images/generations", func(c *gin.Context) {
+				if !h.Gateway.BindUserImageGenerationContext(c, subscriptionService) {
+					return
+				}
+				h.OpenAIGateway.Images(c)
+			})
 
 			// 通知邮箱管理
 			notifyEmail := user.Group("/notify-email")

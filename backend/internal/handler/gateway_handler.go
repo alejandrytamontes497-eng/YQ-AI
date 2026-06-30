@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"sort"
@@ -25,6 +27,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -1047,6 +1050,10 @@ type userChatModel struct {
 	GroupIDs []int64 `json:"group_ids"`
 }
 
+type userImageGenerationRequest struct {
+	Model string `json:"model"`
+}
+
 // UserChatModels returns models available to the authenticated user from
 // schedulable accounts in groups the user can access. It does not require the
 // user to create or choose a frontend API key.
@@ -1193,6 +1200,172 @@ func (h *GatewayHandler) UserImageModels(c *gin.Context) {
 		return items[i].Platform < items[j].Platform
 	})
 	response.Success(c, items)
+}
+
+// BindUserImageGenerationContext selects a user-owned API key for an image
+// request and prepares the gin context for the existing OpenAI Images handler.
+// The browser only sends model and image parameters; API key selection stays on
+// the server side.
+func (h *GatewayHandler) BindUserImageGenerationContext(c *gin.Context, subscriptionService *service.SubscriptionService) bool {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return false
+	}
+	if h == nil || h.gatewayService == nil || h.apiKeyService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Image generation is unavailable")
+		return false
+	}
+
+	body, err := pkghttputil.ReadRequestBodyWithPrealloc(c.Request)
+	if err != nil {
+		if maxErr, ok := extractMaxBytesError(err); ok {
+			response.Error(c, http.StatusRequestEntityTooLarge, buildBodyTooLargeMessage(maxErr.Limit))
+			return false
+		}
+		response.BadRequest(c, "Failed to read request body")
+		return false
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+
+	var req userImageGenerationRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		response.BadRequest(c, "Invalid image generation request")
+		return false
+	}
+	model := strings.TrimSpace(req.Model)
+	if !service.IsOpenAIImageGenerationModel(model) {
+		response.BadRequest(c, "Images endpoint requires an image model")
+		return false
+	}
+
+	apiKey, subscription, ok := h.selectUserImageGenerationAPIKey(c, subject.UserID, model, subscriptionService)
+	if !ok {
+		return false
+	}
+	if apiKey == nil || apiKey.User == nil {
+		response.Error(c, http.StatusServiceUnavailable, "No available image generation key")
+		return false
+	}
+
+	if subscription != nil {
+		c.Set(string(middleware2.ContextKeySubscription), subscription)
+	}
+	c.Set(string(middleware2.ContextKeyAPIKey), apiKey)
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{
+		UserID:      apiKey.User.ID,
+		Concurrency: apiKey.User.Concurrency,
+	})
+	c.Set(string(middleware2.ContextKeyUserRole), apiKey.User.Role)
+	_ = h.apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
+	return true
+}
+
+func (h *GatewayHandler) selectUserImageGenerationAPIKey(
+	c *gin.Context,
+	userID int64,
+	model string,
+	subscriptionService *service.SubscriptionService,
+) (*service.APIKey, *service.UserSubscription, bool) {
+	keys, _, err := h.apiKeyService.List(
+		c.Request.Context(),
+		userID,
+		pagination.PaginationParams{Page: 1, PageSize: 1000},
+		service.APIKeyListFilters{Status: service.StatusAPIKeyActive},
+	)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return nil, nil, false
+	}
+
+	var best *service.APIKey
+	var bestSubscription *service.UserSubscription
+	bestRemaining := math.Inf(-1)
+	for i := range keys {
+		key := keys[i]
+		if key.GroupID == nil {
+			continue
+		}
+		apiKey, err := h.apiKeyService.GetByID(c.Request.Context(), key.ID)
+		if err != nil || apiKey == nil || apiKey.UserID != userID {
+			continue
+		}
+		if !userImageAPIKeySupportsModel(h, c, apiKey, model) {
+			continue
+		}
+
+		subscription, subOK := loadUserImageSubscription(c, apiKey, subscriptionService)
+		if !subOK {
+			continue
+		}
+		remaining := userImageAPIKeyRemainingQuota(apiKey)
+		if best == nil || remaining > bestRemaining {
+			best = apiKey
+			bestSubscription = subscription
+			bestRemaining = remaining
+		}
+	}
+
+	if best == nil {
+		response.Error(c, http.StatusNotFound, "No available image generation model in your pool")
+		return nil, nil, false
+	}
+	return best, bestSubscription, true
+}
+
+func userImageAPIKeySupportsModel(h *GatewayHandler, c *gin.Context, apiKey *service.APIKey, model string) bool {
+	if h == nil || c == nil || apiKey == nil || apiKey.Group == nil || apiKey.GroupID == nil {
+		return false
+	}
+	group := apiKey.Group
+	if group.Platform != service.PlatformOpenAI || !service.GroupAllowsImageGeneration(group) {
+		return false
+	}
+	defaultModels := defaultModelIDsForPlatform(group.Platform)
+	models := h.gatewayService.GetAvailableModels(c.Request.Context(), apiKey.GroupID, group.Platform)
+	if group.CustomModelsListEnabled() {
+		models = filterModelsByCustomList(models, defaultModels, group.ModelsListConfig.Models)
+	} else if len(models) == 0 {
+		models = defaultModels
+	}
+	if !stringSliceContainsExactModel(models, model) {
+		return false
+	}
+	diag := h.gatewayService.DiagnoseModelAvailabilityForPlatform(c.Request.Context(), apiKey.GroupID, model, group.Platform)
+	return diag.HasAccountsInPool && diag.HasModelSupport
+}
+
+func stringSliceContainsExactModel(models []string, model string) bool {
+	model = strings.TrimSpace(model)
+	for _, item := range models {
+		if strings.TrimSpace(item) == model {
+			return true
+		}
+	}
+	return false
+}
+
+func loadUserImageSubscription(c *gin.Context, apiKey *service.APIKey, subscriptionService *service.SubscriptionService) (*service.UserSubscription, bool) {
+	if apiKey == nil || apiKey.Group == nil || !apiKey.Group.IsSubscriptionType() {
+		return nil, true
+	}
+	if subscriptionService == nil {
+		response.Forbidden(c, "No active subscription found for this group")
+		return nil, false
+	}
+	subscription, err := subscriptionService.GetActiveSubscription(c.Request.Context(), apiKey.UserID, apiKey.Group.ID)
+	if err != nil {
+		response.Forbidden(c, "No active subscription found for this group")
+		return nil, false
+	}
+	return subscription, true
+}
+
+func userImageAPIKeyRemainingQuota(apiKey *service.APIKey) float64 {
+	if apiKey == nil || apiKey.Quota <= 0 {
+		return math.Inf(1)
+	}
+	return math.Max(0, apiKey.Quota-apiKey.QuotaUsed)
 }
 
 func appendUniqueInt64(values []int64, next int64) []int64 {

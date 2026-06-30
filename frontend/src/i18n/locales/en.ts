@@ -455,6 +455,8 @@ export default {
     missingRequired: 'Enter a prompt and select an available model',
     emptyResponse: 'The request succeeded but no image was returned',
     generateFailed: 'Generation failed. Please try again later.',
+    networkFailed: 'Image generation request failed. Please check that the backend service is running and try again.',
+    timeout: 'Image generation is taking too long. Please try again later or reduce the image count.',
     generateSuccess: 'Generated {count} image(s)',
     waiting: 'Generating image, please wait...',
     empty: 'Generated images will appear here'
