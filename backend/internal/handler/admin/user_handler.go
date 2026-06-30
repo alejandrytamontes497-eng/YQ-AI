@@ -23,26 +23,33 @@ type UserWithConcurrency struct {
 	CurrentConcurrency int `json:"current_concurrency"`
 }
 
-// UserHandler handles admin user management
+// UserHandler handles admin user management.
 type UserHandler struct {
 	adminService          service.AdminService
 	concurrencyService    *service.ConcurrencyService
-	userPlatformQuotaRepo service.UserPlatformQuotaRepository // T13 admin quota view
-	billingCache          service.BillingCache                // T17/T18 缓存失效（PUT/POST 路径）
+	userPlatformQuotaRepo service.UserPlatformQuotaRepository
+	billingCache          service.BillingCache
+	callAuditService      *service.CallAuditService
 }
 
-// NewUserHandler creates a new admin user handler
+// NewUserHandler creates a new admin user handler.
 func NewUserHandler(
 	adminService service.AdminService,
 	concurrencyService *service.ConcurrencyService,
 	userPlatformQuotaRepo service.UserPlatformQuotaRepository,
 	billingCache service.BillingCache,
+	callAuditServices ...*service.CallAuditService,
 ) *UserHandler {
+	var callAuditService *service.CallAuditService
+	if len(callAuditServices) > 0 {
+		callAuditService = callAuditServices[0]
+	}
 	return &UserHandler{
 		adminService:          adminService,
 		concurrencyService:    concurrencyService,
 		userPlatformQuotaRepo: userPlatformQuotaRepo,
 		billingCache:          billingCache,
+		callAuditService:      callAuditService,
 	}
 }
 
@@ -410,6 +417,26 @@ func (h *UserHandler) GetUserUsage(c *gin.Context) {
 	}
 
 	response.Success(c, stats)
+}
+
+// GetUserCallAudits handles getting a user's latest lightweight call audit records.
+// GET /api/v1/admin/users/:id/call-audits
+func (h *UserHandler) GetUserCallAudits(c *gin.Context) {
+	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "Invalid user ID")
+		return
+	}
+	if h.callAuditService == nil {
+		response.Success(c, []service.CallAuditLog{})
+		return
+	}
+	items, err := h.callAuditService.ListLatestByUser(c.Request.Context(), userID, 10)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, items)
 }
 
 // GetBalanceHistory handles getting user's balance/concurrency change history

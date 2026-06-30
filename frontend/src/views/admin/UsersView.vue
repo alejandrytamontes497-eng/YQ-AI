@@ -664,6 +664,14 @@
                 {{ t('admin.users.apiKeys') }}
               </button>
 
+              <button
+                @click="handleViewCallAudits(user); closeActionMenu()"
+                class="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
+              >
+                <Icon name="document" size="sm" class="text-gray-400" :stroke-width="2" />
+                调用审计
+              </button>
+
               <!-- Allowed Groups -->
               <button
                 @click="handleAllowedGroups(user); closeActionMenu()"
@@ -794,6 +802,7 @@
       @success="loadUsers"
     />
     <UserApiKeysModal :show="showApiKeysModal" :user="viewingUser" @close="closeApiKeysModal" />
+    <UserCallAuditsModal :show="showCallAuditsModal" :user="callAuditsUser" @close="closeCallAuditsModal" />
     <UserAllowedGroupsModal :show="showAllowedGroupsModal" :user="allowedGroupsUser" @close="closeAllowedGroupsModal" @success="loadUsers" />
     <UserBalanceModal :show="showBalanceModal" :user="balanceUser" :operation="balanceOperation" @close="closeBalanceModal" @success="loadUsers" />
     <UserBalanceHistoryModal :show="showBalanceHistoryModal" :user="balanceHistoryUser" @close="closeBalanceHistoryModal" @deposit="handleDepositFromHistory" @withdraw="handleWithdrawFromHistory" />
@@ -836,6 +845,7 @@ import UserCreateModal from '@/components/admin/user/UserCreateModal.vue'
 import UserEditModal from '@/components/admin/user/UserEditModal.vue'
 import UserPlatformQuotaModal from '@/components/admin/user/UserPlatformQuotaModal.vue'
 import UserApiKeysModal from '@/components/admin/user/UserApiKeysModal.vue'
+import UserCallAuditsModal from '@/components/admin/user/UserCallAuditsModal.vue'
 import UserAllowedGroupsModal from '@/components/admin/user/UserAllowedGroupsModal.vue'
 import UserBalanceModal from '@/components/admin/user/UserBalanceModal.vue'
 import UserBalanceHistoryModal from '@/components/admin/user/UserBalanceHistoryModal.vue'
@@ -1330,6 +1340,7 @@ const showEditModal = ref(false)
 const showDeleteDialog = ref(false)
 const showResetPasswordDialog = ref(false)
 const showApiKeysModal = ref(false)
+const showCallAuditsModal = ref(false)
 const showAttributesModal = ref(false)
 const showPlatformQuotaModal = ref(false)
 const editingUser = ref<AdminUser | null>(null)
@@ -1338,6 +1349,7 @@ const resetPasswordUser = ref<AdminUser | null>(null)
 const resettingPassword = ref(false)
 const resetPasswordForm = reactive({ password: '', confirmPassword: '' })
 const viewingUser = ref<AdminUser | null>(null)
+const callAuditsUser = ref<AdminUser | null>(null)
 const platformQuotaUser = ref<AdminUser | null>(null)
 
 const handlePlatformQuota = (user: AdminUser) => {
@@ -1745,6 +1757,16 @@ const handleViewApiKeys = (user: AdminUser) => {
 const closeApiKeysModal = () => {
   showApiKeysModal.value = false
   viewingUser.value = null
+}
+
+const handleViewCallAudits = (user: AdminUser) => {
+  callAuditsUser.value = user
+  showCallAuditsModal.value = true
+}
+
+const closeCallAuditsModal = () => {
+  showCallAuditsModal.value = false
+  callAuditsUser.value = null
 }
 
 const handleAllowedGroups = (user: AdminUser) => {
