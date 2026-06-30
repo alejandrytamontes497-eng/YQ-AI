@@ -192,6 +192,7 @@ interface ChatModelOption extends SelectOption {
   model: string
   platform: string
   groupIds: number[]
+  keyIds: number[]
 }
 
 const MAX_CONVERSATIONS = 10
@@ -457,9 +458,70 @@ function normalizeChannelModels(channels: UserAvailableChannel[]): ChatModelOpti
           label: `${name} · ${platformLabel(platform)}`,
           model: name,
           platform,
-          groupIds
+          groupIds,
+          keyIds: []
         })
       }
+    }
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => a.label.localeCompare(b.label))
+}
+
+async function loadModelsFromKeys(keys: ApiKey[]): Promise<ChatModelOption[]> {
+  const results = await Promise.allSettled(
+    keys.map(async (key) => ({
+      key,
+      models: await chatAPI.listModels(key.key)
+    }))
+  )
+  const byKey = new Map<string, ChatModelOption>()
+
+  for (const result of results) {
+    if (result.status !== 'fulfilled') continue
+
+    const apiKey = result.value.key
+    const platform = apiKey.group?.platform || 'unknown'
+    const groupIds = typeof apiKey.group_id === 'number' ? [apiKey.group_id] : []
+
+    for (const rawName of result.value.models) {
+      const name = rawName.trim()
+      if (!name) continue
+
+      const optionKey = `${platform}:${name}`
+      const existing = byKey.get(optionKey)
+      if (existing) {
+        existing.groupIds = Array.from(new Set([...existing.groupIds, ...groupIds]))
+        existing.keyIds = Array.from(new Set([...existing.keyIds, apiKey.id]))
+        continue
+      }
+
+      byKey.set(optionKey, {
+        value: optionKey,
+        label: `${name} · ${platformLabel(platform)}`,
+        model: name,
+        platform,
+        groupIds,
+        keyIds: [apiKey.id]
+      })
+    }
+  }
+
+  return Array.from(byKey.values())
+}
+
+function mergeModelOptions(...sources: ChatModelOption[][]): ChatModelOption[] {
+  const byKey = new Map<string, ChatModelOption>()
+
+  for (const options of sources) {
+    for (const option of options) {
+      const existing = byKey.get(option.value)
+      if (existing) {
+        existing.groupIds = Array.from(new Set([...existing.groupIds, ...option.groupIds]))
+        existing.keyIds = Array.from(new Set([...existing.keyIds, ...option.keyIds]))
+        continue
+      }
+      byKey.set(option.value, { ...option })
     }
   }
 
@@ -471,6 +533,10 @@ function selectKeyForModel(option: ChatModelOption | null): ApiKey | null {
 
   const pickBestKey = (keys: ApiKey[]) =>
     keys.slice().sort((a, b) => keyRemainingQuota(b) - keyRemainingQuota(a))[0] ?? null
+
+  const directMatches = activeKeys.value.filter((key) => option.keyIds.includes(key.id))
+  const directKey = pickBestKey(directMatches)
+  if (directKey) return directKey
 
   const groupMatches = activeKeys.value.filter((key) =>
     typeof key.group_id === 'number' && option.groupIds.includes(key.group_id)
@@ -489,13 +555,12 @@ function keyRemainingQuota(key: ApiKey): number {
 async function loadChatData() {
   loading.value = true
   try {
-    const [keysResult, channels] = await Promise.all([
-      keysAPI.list(1, 100, { status: 'active', sort_by: 'created_at', sort_order: 'desc' }),
-      userChannelsAPI.getAvailable()
-    ])
+    const keysResult = await keysAPI.list(1, 100, { status: 'active', sort_by: 'created_at', sort_order: 'desc' })
+    const channels = await userChannelsAPI.getAvailable().catch(() => [])
 
     apiKeys.value = keysResult.items
-    channelModels.value = normalizeChannelModels(channels)
+    const keyModels = await loadModelsFromKeys(activeKeys.value)
+    channelModels.value = mergeModelOptions(normalizeChannelModels(channels), keyModels)
     if (!channelModels.value.some((item) => item.value === selectedModel.value)) {
       selectedModel.value = channelModels.value[0]?.value ?? ''
     }
