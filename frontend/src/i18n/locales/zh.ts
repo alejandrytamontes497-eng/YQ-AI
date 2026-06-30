@@ -378,6 +378,7 @@ export default {
     announcements: '公告',
     apiKeys: 'API 密钥',
     chat: '聊天',
+    imageGeneration: '生图',
     usage: '使用记录',
     redeem: '兑换',
     affiliate: '邀请返利',
@@ -422,6 +423,41 @@ export default {
   chat: {
     title: '聊天',
     description: '选择 API 密钥进行对话并按该密钥计费'
+  },
+
+  imageGeneration: {
+    title: '快速生图',
+    description: '输入提示词并选择模型、尺寸、质量和数量，生成后可直接下载'
+  },
+
+  imageGenerate: {
+    title: '快速生成',
+    description: '用提示词和参数快速完成生图，结果自动进入图库管理。',
+    quickGenerate: '快速生成',
+    refreshModels: '刷新模型',
+    promptLabel: '图片描述',
+    promptPlaceholder: '例如：一张高级科技产品海报，干净背景，清晰主视觉，真实材质，高级棚拍光线',
+    model: '模型',
+    size: '尺寸',
+    quality: '质量',
+    count: '数量',
+    optimizePrompt: '优化提示词',
+    generateNow: '立即生成',
+    generating: '生成中',
+    results: '生成结果',
+    clearGallery: '清空图库',
+    copyImage: '复制图片',
+    download: '下载图片',
+    loadingModels: '正在加载模型',
+    noModels: '暂无可用模型',
+    noAvailableModels: '暂无可用生图模型，请确认分组已开启图片生成且号池包含 gpt-image 模型。',
+    loadFailed: '加载生图模型失败',
+    missingRequired: '请填写提示词并选择可用模型',
+    emptyResponse: '生成成功但没有返回图片',
+    generateFailed: '生成失败，请稍后重试',
+    generateSuccess: '已生成 {count} 张图片',
+    waiting: '正在生成图片，请稍候...',
+    empty: '生成后的图片会出现在这里'
   },
 
   // Auth

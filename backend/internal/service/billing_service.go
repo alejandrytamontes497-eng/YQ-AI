@@ -1250,30 +1250,7 @@ func (s *BillingService) getImageUnitPrice(model string, imageSize string, group
 	return s.getDefaultImagePrice(model, imageSize)
 }
 
-// getDefaultImagePrice 获取 LiteLLM 默认图片价格
+// getDefaultImagePrice 获取默认图片价格
 func (s *BillingService) getDefaultImagePrice(model string, imageSize string) float64 {
-	basePrice := 0.0
-
-	// 从 PricingService 获取 output_cost_per_image
-	if s.pricingService != nil {
-		pricing := s.pricingService.GetModelPricing(model)
-		if pricing != nil && pricing.OutputCostPerImage > 0 {
-			basePrice = pricing.OutputCostPerImage
-		}
-	}
-
-	// 如果没有找到价格，使用硬编码默认值（$0.134，来自 gemini-3-pro-image-preview）
-	if basePrice <= 0 {
-		basePrice = 0.134
-	}
-
-	// 2K 尺寸 1.5 倍，4K 尺寸翻倍
-	if imageSize == "2K" {
-		return basePrice * 1.5
-	}
-	if imageSize == "4K" {
-		return basePrice * 2
-	}
-
-	return basePrice
+	return 0.10
 }

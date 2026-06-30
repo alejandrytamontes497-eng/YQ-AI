@@ -779,12 +779,12 @@ func TestCalculateCostWithLongContext_ExtraMultiplierLessEqualOne(t *testing.T) 
 func TestCalculateImageCost(t *testing.T) {
 	svc := newTestBillingService()
 
-	price := 0.134
+	price := 0.10
 	cfg := &ImagePriceConfig{Price1K: &price}
 	cost := svc.CalculateImageCost("gpt-image-1", "1K", 3, cfg, 1.0)
 
-	require.InDelta(t, 0.134*3, cost.TotalCost, 1e-10)
-	require.InDelta(t, 0.134*3, cost.ActualCost, 1e-10)
+	require.InDelta(t, 0.10*3, cost.TotalCost, 1e-10)
+	require.InDelta(t, 0.10*3, cost.ActualCost, 1e-10)
 }
 
 func TestIsModelSupported(t *testing.T) {

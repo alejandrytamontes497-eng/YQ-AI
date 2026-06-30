@@ -22,6 +22,11 @@ func GroupAllowsImageGeneration(group *Group) bool {
 	return group == nil || group.AllowImageGeneration
 }
 
+// IsOpenAIImageGenerationModel reports whether a model is accepted by the OpenAI Images API.
+func IsOpenAIImageGenerationModel(model string) bool {
+	return isOpenAIImageGenerationModel(model)
+}
+
 // IsImageGenerationIntent classifies requests that can produce generated images.
 func IsImageGenerationIntent(endpoint string, requestedModel string, body []byte) bool {
 	if IsImageGenerationEndpoint(endpoint) {

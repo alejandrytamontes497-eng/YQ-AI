@@ -1120,6 +1120,81 @@ func (h *GatewayHandler) UserChatModels(c *gin.Context) {
 	response.Success(c, items)
 }
 
+// UserImageModels returns OpenAI Images API compatible models available to the
+// authenticated user. It keeps the frontend model list aligned with the user's
+// accessible groups and the group image-generation switch.
+func (h *GatewayHandler) UserImageModels(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	if h == nil || h.gatewayService == nil || h.apiKeyService == nil {
+		response.Success(c, []userChatModel{})
+		return
+	}
+
+	groups, err := h.apiKeyService.GetAvailableGroups(c.Request.Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	byKey := make(map[string]userChatModel)
+	for _, group := range groups {
+		if !service.GroupAllowsImageGeneration(&group) {
+			continue
+		}
+		groupID := group.ID
+		platform := strings.TrimSpace(group.Platform)
+		if platform != service.PlatformOpenAI {
+			continue
+		}
+
+		defaultModels := defaultModelIDsForPlatform(platform)
+		if len(defaultModels) == 0 {
+			continue
+		}
+
+		models := h.gatewayService.GetAvailableModels(c.Request.Context(), &groupID, platform)
+		if group.CustomModelsListEnabled() {
+			models = filterModelsByCustomList(models, defaultModels, group.ModelsListConfig.Models)
+		} else if len(models) == 0 {
+			models = defaultModels
+		}
+
+		for _, model := range models {
+			model = strings.TrimSpace(model)
+			if model == "" || !service.IsOpenAIImageGenerationModel(model) {
+				continue
+			}
+			diag := h.gatewayService.DiagnoseModelAvailabilityForPlatform(c.Request.Context(), &groupID, model, platform)
+			if !diag.HasAccountsInPool || !diag.HasModelSupport {
+				continue
+			}
+			key := platform + ":" + model
+			item := byKey[key]
+			if item.Name == "" {
+				item = userChatModel{Name: model, Platform: platform}
+			}
+			item.GroupIDs = appendUniqueInt64(item.GroupIDs, groupID)
+			byKey[key] = item
+		}
+	}
+
+	items := make([]userChatModel, 0, len(byKey))
+	for _, item := range byKey {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Platform == items[j].Platform {
+			return items[i].Name < items[j].Name
+		}
+		return items[i].Platform < items[j].Platform
+	})
+	response.Success(c, items)
+}
+
 func appendUniqueInt64(values []int64, next int64) []int64 {
 	for _, value := range values {
 		if value == next {

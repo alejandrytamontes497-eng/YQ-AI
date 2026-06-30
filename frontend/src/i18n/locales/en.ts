@@ -378,6 +378,7 @@ export default {
     announcements: 'Announcements',
     apiKeys: 'API Keys',
     chat: 'Chat',
+    imageGeneration: 'Images',
     usage: 'Usage',
     redeem: 'Redeem',
     affiliate: 'Affiliate Rebates',
@@ -422,6 +423,41 @@ export default {
   chat: {
     title: 'Chat',
     description: 'Chat with models using a selected API key for billing'
+  },
+
+  imageGeneration: {
+    title: 'Image Generation',
+    description: 'Generate downloadable images from prompts with model, size, quality, and count controls'
+  },
+
+  imageGenerate: {
+    title: 'Quick Generate',
+    description: 'Generate images quickly from prompts and parameters. Results are saved into the local gallery.',
+    quickGenerate: 'Quick Generate',
+    refreshModels: 'Refresh models',
+    promptLabel: 'Image description',
+    promptPlaceholder: 'Example: a premium tech product poster, clean background, clear focal subject, realistic materials, studio lighting',
+    model: 'Model',
+    size: 'Size',
+    quality: 'Quality',
+    count: 'Count',
+    optimizePrompt: 'Optimize prompt',
+    generateNow: 'Generate now',
+    generating: 'Generating',
+    results: 'Results',
+    clearGallery: 'Clear gallery',
+    copyImage: 'Copy image',
+    download: 'Download',
+    loadingModels: 'Loading models',
+    noModels: 'No models available',
+    noAvailableModels: 'No image generation models are available. Check that the group allows image generation and the pool has gpt-image models.',
+    loadFailed: 'Failed to load image models',
+    missingRequired: 'Enter a prompt and select an available model',
+    emptyResponse: 'The request succeeded but no image was returned',
+    generateFailed: 'Generation failed. Please try again later.',
+    generateSuccess: 'Generated {count} image(s)',
+    waiting: 'Generating image, please wait...',
+    empty: 'Generated images will appear here'
   },
 
   // Auth
