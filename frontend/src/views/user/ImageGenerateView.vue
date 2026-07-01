@@ -370,8 +370,13 @@ function clearGallery() {
 }
 
 function imageGenerationErrorMessage(error: unknown, fallback: string): string {
-  const err = error as { status?: number; code?: string; message?: string } | undefined
-  const message = String(err?.message || '').trim()
+  const err = error as {
+    status?: number
+    code?: string
+    message?: string
+    error?: { message?: string }
+  } | undefined
+  const message = String(err?.error?.message || err?.message || '').trim()
   if (
     err?.status === 0 ||
     err?.code === 'ERR_NETWORK' ||
