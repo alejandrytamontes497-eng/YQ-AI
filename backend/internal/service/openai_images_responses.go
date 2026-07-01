@@ -86,13 +86,38 @@ func (e *OpenAIImagesUpstreamError) clientMessage() string {
 	if e == nil {
 		return "Upstream request failed"
 	}
-	if trimmed := strings.TrimSpace(e.Message); trimmed != "" {
+	if trimmed := openAIImagesClientMessage(e.Message); trimmed != "" {
 		return trimmed
 	}
-	if trimmed := strings.TrimSpace(e.Code); trimmed != "" {
+	if trimmed := openAIImagesClientMessage(e.Code); trimmed != "" {
 		return trimmed
 	}
 	return "Upstream request failed"
+}
+
+func openAIImagesClientMessage(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" || openAIImagesMarkupLikeMessage(message) {
+		return ""
+	}
+	const maxClientMessageLength = 600
+	if len(message) > maxClientMessageLength {
+		return message[:maxClientMessageLength] + "..."
+	}
+	return message
+}
+
+func openAIImagesMarkupLikeMessage(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if strings.Contains(lower, "<svg") || strings.Contains(lower, "&lt;svg") {
+		return true
+	}
+	for _, prefix := range []string{"<!doctype", "<html", "<head", "<body", "<?xml", "<path", "<rect", "<circle"} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsOpenAIImagesRetryableUpstreamError reports whether an Images error is an

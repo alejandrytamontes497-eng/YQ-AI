@@ -181,6 +181,7 @@ const PREVIEW_QUALITY = 0.76
 const IMAGE_DB_NAME = 'image_generation_gallery'
 const IMAGE_DB_VERSION = 1
 const IMAGE_STORE_NAME = 'images'
+const ERROR_MESSAGE_MAX_LENGTH = 360
 
 const sizeOptions: SelectOption[] = [
   { value: '1024x1024', label: '1:1 · 1024x1024 · 方图' },
@@ -728,7 +729,33 @@ function imageGenerationErrorMessage(error: unknown, fallback: string): string {
   if (err?.code === 'ECONNABORTED' || /timeout/i.test(message)) {
     return t('imageGenerate.timeout')
   }
-  return message || fallback
+  return cleanImageGenerationErrorMessage(message, fallback)
+}
+
+function cleanImageGenerationErrorMessage(message: string, fallback: string): string {
+  const trimmed = message.trim()
+  if (!trimmed || isMarkupLikeErrorMessage(trimmed) || isGenericUpstreamErrorMessage(trimmed)) {
+    return fallback
+  }
+  if (trimmed.length > ERROR_MESSAGE_MAX_LENGTH) {
+    return `${trimmed.slice(0, ERROR_MESSAGE_MAX_LENGTH)}...`
+  }
+  return trimmed
+}
+
+function isMarkupLikeErrorMessage(message: string): boolean {
+  const lower = message.trim().toLowerCase()
+  return (
+    /^<\s*(?:!doctype|html|head|body|svg|path|rect|circle|xml)\b/.test(lower) ||
+    lower.includes('<svg') ||
+    lower.includes('&lt;svg')
+  )
+}
+
+function isGenericUpstreamErrorMessage(message: string): boolean {
+  return /^(?:upstream request failed(?: \(status \d+\))?|upstream gateway error|image generation request failed)$/i.test(
+    message.trim()
+  )
 }
 
 </script>
@@ -796,7 +823,7 @@ function imageGenerationErrorMessage(error: unknown, fallback: string): string {
 }
 
 .error-box {
-  @apply mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700;
+  @apply mt-4 break-words rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700;
 }
 
 .result-section {
