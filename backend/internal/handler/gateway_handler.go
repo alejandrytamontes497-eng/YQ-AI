@@ -1179,6 +1179,9 @@ func (h *GatewayHandler) UserImageModels(c *gin.Context) {
 			if !diag.HasAccountsInPool || !diag.HasModelSupport {
 				continue
 			}
+			if !h.gatewayService.SupportsOpenAIImageModelForPlatform(c.Request.Context(), &groupID, model, platform, service.OpenAIImagesCapabilityNative) {
+				continue
+			}
 			key := platform + ":" + model
 			item := byKey[key]
 			if item.Name == "" {
@@ -1332,7 +1335,9 @@ func userImageAPIKeySupportsModel(h *GatewayHandler, c *gin.Context, apiKey *ser
 		return false
 	}
 	diag := h.gatewayService.DiagnoseModelAvailabilityForPlatform(c.Request.Context(), apiKey.GroupID, model, group.Platform)
-	return diag.HasAccountsInPool && diag.HasModelSupport
+	return diag.HasAccountsInPool &&
+		diag.HasModelSupport &&
+		h.gatewayService.SupportsOpenAIImageModelForPlatform(c.Request.Context(), apiKey.GroupID, model, group.Platform, service.OpenAIImagesCapabilityNative)
 }
 
 func stringSliceContainsExactModel(models []string, model string) bool {

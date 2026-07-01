@@ -49,3 +49,32 @@ func (s *OpenAIGatewayService) DiagnoseModelAvailabilityForPlatform(
 	}
 	return diag
 }
+
+// SupportsOpenAIImageModelForPlatform reports whether at least one schedulable
+// account in the group can serve the requested OpenAI Images capability.
+func (s *OpenAIGatewayService) SupportsOpenAIImageModelForPlatform(
+	ctx context.Context,
+	groupID *int64,
+	requestedModel string,
+	platform string,
+	requiredCapability OpenAIImagesCapability,
+) bool {
+	if s == nil {
+		return false
+	}
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		return false
+	}
+	accounts, err := s.listSchedulableAccounts(ctx, groupID, platform)
+	if err != nil {
+		return false
+	}
+	for i := range accounts {
+		account := &accounts[i]
+		if account.IsModelSupported(requestedModel) && account.SupportsOpenAIImageCapability(requiredCapability) {
+			return true
+		}
+	}
+	return false
+}

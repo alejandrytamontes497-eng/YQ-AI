@@ -1319,7 +1319,9 @@ func (a *Account) SupportsOpenAIImageCapability(capability OpenAIImagesCapabilit
 	case OpenAIImagesCapabilityBasic:
 		return a.Type == AccountTypeOAuth || a.Type == AccountTypeAPIKey
 	case OpenAIImagesCapabilityNative:
-		return a.Type == AccountTypeAPIKey
+		// OAuth accounts serve Images API requests through the Responses
+		// image_generation bridge, including model/size/quality options.
+		return a.Type == AccountTypeOAuth || a.Type == AccountTypeAPIKey
 	default:
 		return true
 	}
