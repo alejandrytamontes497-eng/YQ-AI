@@ -140,13 +140,18 @@ export async function createChatCompletionStream(
   let buffer = ''
   let usage: ChatCompletionUsage | null = null
   let hasStreamContent = false
+  let streamDone = false
 
   const handleLine = (line: string) => {
     const trimmed = line.trim()
     if (!trimmed.startsWith('data:')) return
 
     const data = trimmed.slice(5).trim()
-    if (!data || data === '[DONE]') return
+    if (!data) return
+    if (data === '[DONE]') {
+      streamDone = true
+      return
+    }
 
     const body = parseJsonBody(data)
     const delta = readStreamDelta(body)
@@ -180,10 +185,20 @@ export async function createChatCompletionStream(
     const parsed = parseSSELines(buffer)
     buffer = parsed.rest
     parsed.lines.forEach(handleLine)
+    if (streamDone) {
+      try {
+        await reader.cancel()
+      } catch {
+        // The server already sent the terminal event; ignore transport cleanup noise.
+      }
+      break
+    }
   }
 
-  buffer += decoder.decode()
-  if (buffer.trim()) handleLine(buffer)
+  if (!streamDone) {
+    buffer += decoder.decode()
+    if (buffer.trim()) handleLine(buffer)
+  }
 
   return usage
 }

@@ -93,6 +93,9 @@
                 <button type="button" :title="t('imageGenerate.download')" @click="downloadImage(item)">
                   <Icon name="download" size="xs" :stroke-width="2" />
                 </button>
+                <button type="button" :title="t('common.delete')" @click="deleteGalleryItem(item)">
+                  <Icon name="trash" size="xs" :stroke-width="2" />
+                </button>
               </div>
             </div>
           </article>
@@ -394,6 +397,13 @@ async function downloadImage(item: GalleryItem) {
   }
 }
 
+async function deleteGalleryItem(item: GalleryItem) {
+  gallery.value = gallery.value.filter((entry) => entry.id !== item.id)
+  revokeGalleryItemUrls(item)
+  originalBlobs.delete(item.id)
+  await deleteImageRecord(item.id)
+}
+
 async function imageBlob(src: string): Promise<Blob> {
   if (src.startsWith('data:')) {
     return dataURLToBlob(src)
@@ -669,6 +679,20 @@ async function getImageRecord(id: string): Promise<StoredImageRecord | null> {
     })
   } catch {
     return null
+  }
+}
+
+async function deleteImageRecord(id: string): Promise<void> {
+  try {
+    const db = await openImageDB()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(IMAGE_STORE_NAME, 'readwrite')
+      tx.objectStore(IMAGE_STORE_NAME).delete(id)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  } catch {
+    // Ignore unavailable storage.
   }
 }
 

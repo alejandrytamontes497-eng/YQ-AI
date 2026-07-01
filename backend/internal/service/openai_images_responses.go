@@ -20,6 +20,8 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const openAIImagesResponsesInstructions = "Use the image_generation tool to fulfill the user's image request. Return generated image output only."
+
 type openAIResponsesImageResult struct {
 	Result        string
 	RevisedPrompt string
@@ -354,7 +356,8 @@ func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel st
 		return nil, fmt.Errorf("image input is required")
 	}
 
-	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":{"type":"image_generation"}}`)
+	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false}`)
+	req, _ = sjson.SetBytes(req, "instructions", openAIImagesResponsesInstructions)
 	req, _ = sjson.SetBytes(req, "model", openAIImagesResponsesMainModel)
 
 	input := []byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`)
