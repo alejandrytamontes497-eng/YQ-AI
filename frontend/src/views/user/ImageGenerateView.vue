@@ -734,7 +734,12 @@ function imageGenerationErrorMessage(error: unknown, fallback: string): string {
 
 function cleanImageGenerationErrorMessage(message: string, fallback: string): string {
   const trimmed = message.trim()
-  if (!trimmed || isMarkupLikeErrorMessage(trimmed) || isGenericUpstreamErrorMessage(trimmed)) {
+  if (
+    !trimmed ||
+    isMarkupLikeErrorMessage(trimmed) ||
+    isGenericUpstreamErrorMessage(trimmed) ||
+    isImageToolMetaErrorMessage(trimmed)
+  ) {
     return fallback
   }
   if (trimmed.length > ERROR_MESSAGE_MAX_LENGTH) {
@@ -755,6 +760,18 @@ function isMarkupLikeErrorMessage(message: string): boolean {
 function isGenericUpstreamErrorMessage(message: string): boolean {
   return /^(?:upstream request failed(?: \(status \d+\))?|upstream gateway error|image generation request failed)$/i.test(
     message.trim()
+  )
+}
+
+function isImageToolMetaErrorMessage(message: string): boolean {
+  const lower = message.trim().toLowerCase()
+  return (
+    (lower.startsWith('{') && lower.includes('prompt')) ||
+    lower.includes('image_generation tool') ||
+    lower.includes('do not answer with text') ||
+    lower.includes('return generated image output') ||
+    lower.includes("that's not valid") ||
+    lower.includes('another possibility')
   )
 }
 

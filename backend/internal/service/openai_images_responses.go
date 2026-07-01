@@ -140,20 +140,57 @@ func shouldRetryOpenAIImagesOAuthWithoutToolChoice(statusCode int, body []byte) 
 
 func openAIImagesLooksLikeToolArgumentText(message string) bool {
 	message = strings.TrimSpace(message)
-	if message == "" || !strings.HasPrefix(message, "{") {
+	if message == "" {
 		return false
 	}
 	if gjson.Valid(message) {
-		return strings.TrimSpace(gjson.Get(message, "prompt").String()) != "" &&
-			(gjson.Get(message, "size").Exists() ||
-				gjson.Get(message, "quality").Exists() ||
-				gjson.Get(message, "output_format").Exists())
+		return strings.TrimSpace(gjson.Get(message, "prompt").String()) != "" ||
+			strings.TrimSpace(gjson.Get(message, " prompt ").String()) != ""
 	}
 	lower := strings.ToLower(message)
-	return strings.Contains(lower, `"prompt"`) &&
-		(strings.Contains(lower, `"size"`) ||
-			strings.Contains(lower, `"quality"`) ||
-			strings.Contains(lower, `"output_format"`))
+	return strings.Contains(lower, `"prompt"`) ||
+		strings.Contains(lower, `" prompt "`) ||
+		strings.Contains(lower, "image_generation tool") ||
+		strings.Contains(lower, "do not answer with text") ||
+		strings.Contains(lower, "return generated image output")
+}
+
+func openAIImagesLooksLikePolicyRefusal(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	if lower == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"content policy",
+		"content_policy",
+		"policy violation",
+		"policy_violation",
+		"safety policy",
+		"safety system",
+		"safety violation",
+		"safety_violations",
+		"moderation",
+		"disallowed",
+		"unsafe",
+		"not allowed to generate",
+		"cannot generate",
+		"can't generate",
+		"unable to generate",
+		"内容策略",
+		"安全策略",
+		"安全系统",
+		"违规",
+		"不适合生成",
+		"无法生成",
+		"不能生成",
+		"拒绝生成",
+		"不允许生成",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsOpenAIImagesRetryableUpstreamError reports whether an Images error is an
@@ -1170,8 +1207,8 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 		// (B) 真空响应：既无图也无任何文字输出（罕见，如偶发路由到 gpt-5.x-mini、
 		//     image_gen 工具未执行）。这是上游的概率性失败，此时才按可重试处理。
 		if refusal := extractOpenAIImagesModelRefusal(body); refusal != "" {
-			if openAIImagesLooksLikeToolArgumentText(refusal) {
-				setOpsUpstreamError(c, http.StatusBadGateway, "upstream returned image tool arguments as text", summarizeOpenAIImagesNoOutputBody(body))
+			if openAIImagesLooksLikeToolArgumentText(refusal) || !openAIImagesLooksLikePolicyRefusal(refusal) {
+				setOpsUpstreamError(c, http.StatusBadGateway, "upstream returned text instead of image output", summarizeOpenAIImagesNoOutputBody(body))
 				return OpenAIUsage{}, 0, nil, &UpstreamFailoverError{
 					StatusCode:             http.StatusBadGateway,
 					ResponseBody:           body,
