@@ -20,7 +20,7 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-const openAIImagesResponsesInstructions = "Use the image_generation tool to fulfill the user's image request. Return generated image output only."
+const openAIImagesResponsesInstructions = "Use the image_generation tool to fulfill the user's image request. Do not answer with text, JSON, or descriptions. Return generated image output only."
 
 type openAIResponsesImageResult struct {
 	Result        string
@@ -118,6 +118,42 @@ func openAIImagesMarkupLikeMessage(message string) bool {
 		}
 	}
 	return false
+}
+
+func shouldRetryOpenAIImagesOAuthWithoutToolChoice(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest {
+		return false
+	}
+	message := strings.ToLower(strings.TrimSpace(extractUpstreamErrorMessage(body)))
+	if message == "" {
+		message = strings.ToLower(strings.TrimSpace(string(body)))
+	} else {
+		message += " " + strings.ToLower(strings.TrimSpace(string(body)))
+	}
+	return strings.Contains(message, "tool_choice") &&
+		strings.Contains(message, "image_generation") &&
+		(strings.Contains(message, "not found") ||
+			strings.Contains(message, "unknown") ||
+			strings.Contains(message, "unsupported") ||
+			strings.Contains(message, "invalid"))
+}
+
+func openAIImagesLooksLikeToolArgumentText(message string) bool {
+	message = strings.TrimSpace(message)
+	if message == "" || !strings.HasPrefix(message, "{") {
+		return false
+	}
+	if gjson.Valid(message) {
+		return strings.TrimSpace(gjson.Get(message, "prompt").String()) != "" &&
+			(gjson.Get(message, "size").Exists() ||
+				gjson.Get(message, "quality").Exists() ||
+				gjson.Get(message, "output_format").Exists())
+	}
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, `"prompt"`) &&
+		(strings.Contains(lower, `"size"`) ||
+			strings.Contains(lower, `"quality"`) ||
+			strings.Contains(lower, `"output_format"`))
 }
 
 // IsOpenAIImagesRetryableUpstreamError reports whether an Images error is an
@@ -355,7 +391,7 @@ func openAIImageUploadToDataURL(upload OpenAIImagesUpload) (string, error) {
 	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(upload.Data), nil
 }
 
-func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel string) ([]byte, error) {
+func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel string, forceToolChoice bool) ([]byte, error) {
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
@@ -441,6 +477,9 @@ func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel st
 
 	req, _ = sjson.SetRawBytes(req, "tools", []byte(`[]`))
 	req, _ = sjson.SetRawBytes(req, "tools.-1", tool)
+	if forceToolChoice {
+		req, _ = sjson.SetRawBytes(req, "tool_choice", []byte(`{"type":"image_generation"}`))
+	}
 	return req, nil
 }
 
@@ -1131,6 +1170,14 @@ func (s *OpenAIGatewayService) handleOpenAIImagesOAuthNonStreamingResponse(
 		// (B) 真空响应：既无图也无任何文字输出（罕见，如偶发路由到 gpt-5.x-mini、
 		//     image_gen 工具未执行）。这是上游的概率性失败，此时才按可重试处理。
 		if refusal := extractOpenAIImagesModelRefusal(body); refusal != "" {
+			if openAIImagesLooksLikeToolArgumentText(refusal) {
+				setOpsUpstreamError(c, http.StatusBadGateway, "upstream returned image tool arguments as text", summarizeOpenAIImagesNoOutputBody(body))
+				return OpenAIUsage{}, 0, nil, &UpstreamFailoverError{
+					StatusCode:             http.StatusBadGateway,
+					ResponseBody:           body,
+					RetryableOnSameAccount: true,
+				}
+			}
 			refusalErr := &OpenAIImagesUpstreamError{
 				StatusCode: http.StatusBadRequest,
 				ErrorType:  "image_generation_user_error",
@@ -1553,41 +1600,84 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		return nil, err
 	}
 
-	responsesBody, err := buildOpenAIImagesResponsesRequest(parsed, requestModel)
+	buildOAuthRequest := func(forceToolChoice bool) (*http.Request, error) {
+		responsesBody, err := buildOpenAIImagesResponsesRequest(parsed, requestModel, forceToolChoice)
+		if err != nil {
+			return nil, err
+		}
+		upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, true, parsed.StickySessionSeed(), false)
+		if err != nil {
+			return nil, err
+		}
+		upstreamReq.Header.Set("Content-Type", "application/json")
+		upstreamReq.Header.Set("Accept", "text/event-stream")
+		return upstreamReq, nil
+	}
+
+	upstreamReq, err := buildOAuthRequest(true)
 	if err != nil {
 		return nil, err
 	}
-	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, responsesBody, token, true, parsed.StickySessionSeed(), false)
-	if err != nil {
-		return nil, err
-	}
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Accept", "text/event-stream")
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	upstreamStart := time.Now()
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+	sendOAuthRequest := func(req *http.Request) (*http.Response, error) {
+		upstreamStart := time.Now()
+		resp, err := s.httpUpstream.Do(req, proxyURL, account.ID, account.Concurrency)
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		if err != nil {
+			safeErr := sanitizeUpstreamErrorMessage(err.Error())
+			setOpsUpstreamError(c, 0, safeErr, "")
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: 0,
+				UpstreamURL:        safeUpstreamURL(req.URL.String()),
+				Kind:               "request_error",
+				Message:            safeErr,
+			})
+			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		}
+		return resp, nil
+	}
+
+	resp, err := sendOAuthRequest(upstreamReq)
 	if err != nil {
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
-		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
-		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+		return nil, err
 	}
 	if resp.StatusCode >= 400 {
 		respBody := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
+		if shouldRetryOpenAIImagesOAuthWithoutToolChoice(resp.StatusCode, respBody) {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+				Kind:               "retry",
+				Message:            "upstream rejected image_generation tool_choice; retrying without tool_choice",
+			})
+			upstreamReq, err = buildOAuthRequest(false)
+			if err != nil {
+				return nil, err
+			}
+			resp, err = sendOAuthRequest(upstreamReq)
+			if err != nil {
+				return nil, err
+			}
+			if resp.StatusCode >= 400 {
+				respBody = s.readUpstreamErrorBody(resp)
+				_ = resp.Body.Close()
+			}
+		}
+		if resp.StatusCode < 400 {
+			goto handleSuccess
+		}
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -1611,6 +1701,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		}
 		return s.handleOpenAIImagesErrorResponse(upstreamCtx, resp, c, account, requestModel)
 	}
+handleSuccess:
 	defer func() { _ = resp.Body.Close() }()
 
 	var (
