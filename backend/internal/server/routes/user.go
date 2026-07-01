@@ -87,12 +87,6 @@ func RegisterUserRoutes(
 			channels.GET("/available", h.AvailableChannel.List)
 		}
 
-		// 用户模型广场（非管理员接口）：常驻展示当前用户可用模型信息。
-		models := authenticated.Group("/models")
-		{
-			models.GET("/available", h.AvailableChannel.ListModels)
-		}
-
 		// 使用记录
 		usage := authenticated.Group("/usage")
 		{

@@ -79,6 +79,20 @@ func TestBuildOpenAIResponsesURL_ProbeURL(t *testing.T) {
 	}
 }
 
+func TestStripUnsupportedRawChatSampling(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"model":"gpt-5.4","messages":[{"role":"user","content":"hi"}],"temperature":0.7,"top_p":0.9,"max_tokens":128}`)
+	got := stripUnsupportedRawChatSampling(body, "openai/gpt-5.4")
+	require.False(t, gjson.GetBytes(got, "temperature").Exists())
+	require.False(t, gjson.GetBytes(got, "top_p").Exists())
+	require.Equal(t, int64(128), gjson.GetBytes(got, "max_tokens").Int())
+
+	nonReasoning := stripUnsupportedRawChatSampling(body, "gpt-4o")
+	require.True(t, gjson.GetBytes(nonReasoning, "temperature").Exists())
+	require.True(t, gjson.GetBytes(nonReasoning, "top_p").Exists())
+}
+
 func TestForwardAsRawChatCompletions_ForcesStreamUsageUpstreamAndPassesUsageDownstream(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -41,6 +41,30 @@ var openaiCCRawAllowedHeaders = map[string]bool{
 	"user-agent":      true,
 }
 
+func isOpenAIRawChatReasoningModel(model string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(model))
+	if slash := strings.LastIndex(normalized, "/"); slash >= 0 {
+		normalized = normalized[slash+1:]
+	}
+	return strings.HasPrefix(normalized, "gpt-5")
+}
+
+func stripUnsupportedRawChatSampling(body []byte, model string) []byte {
+	if !isOpenAIRawChatReasoningModel(model) {
+		return body
+	}
+
+	for _, field := range []string{"temperature", "top_p"} {
+		if !gjson.GetBytes(body, field).Exists() {
+			continue
+		}
+		if updated, err := sjson.DeleteBytes(body, field); err == nil {
+			body = updated
+		}
+	}
+	return body
+}
+
 // forwardAsRawChatCompletions 直转客户端的 Chat Completions 请求到上游
 // `{base_url}/v1/chat/completions`，**不**做 CC↔Responses 协议转换。
 //
@@ -93,6 +117,7 @@ func (s *OpenAIGatewayService) forwardAsRawChatCompletions(
 	if normalizedBody, normalized := NormalizeGLMOpenAIReasoningEffort(upstreamBody, upstreamModel); normalized {
 		upstreamBody = normalizedBody
 	}
+	upstreamBody = stripUnsupportedRawChatSampling(upstreamBody, upstreamModel)
 
 	// 4. Apply OpenAI fast policy on the CC body
 	updatedBody, policyErr := s.applyOpenAIFastPolicyToBody(ctx, account, upstreamModel, upstreamBody)

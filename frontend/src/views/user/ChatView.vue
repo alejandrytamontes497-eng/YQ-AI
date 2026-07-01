@@ -880,11 +880,6 @@ function resetStreamRenderer() {
   resolveStreamDrain()
 }
 
-function parsePositiveNumber(value: string, fallback: number): number {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
-}
-
 async function sendMessage() {
   const requestOption = selectedModelOption.value
   const requestKey = selectedKey.value
@@ -923,8 +918,6 @@ async function sendMessage() {
       apiKey: requestKey.key,
       model: requestModel,
       messages: requestMessages,
-      temperature: 0.7,
-      max_tokens: Math.round(parsePositiveNumber('2048', 2048)),
       signal: abortController.signal
     }, {
       onDelta: (delta) => appendAssistantMessage(assistantMessage, delta),

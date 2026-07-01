@@ -390,7 +390,6 @@ export default {
     users: '用户管理',
     groups: '分组管理',
     channels: '渠道管理',
-    modelSquare: '模型广场',
     availableChannels: '可用渠道',
     subscriptions: '订阅管理',
     accounts: '账号管理',
@@ -1161,38 +1160,6 @@ export default {
       intervals: '阶梯定价',
       unitPerMillion: '/ 1M token',
       unitPerRequest: '/ 次'
-    }
-  },
-
-  modelSquare: {
-    title: '模型广场',
-    description: '查看当前账号可用的全部模型、平台、价格和可访问分组。',
-    searchPlaceholder: '搜索模型、平台、渠道或分组...',
-    empty: '暂无可用模型',
-    noPricing: '未配置定价',
-    noGroups: '暂无可访问分组',
-    intervalCount: '{count} 个阶梯',
-    stats: {
-      models: '可用模型',
-      platforms: '平台',
-      channels: '可用渠道',
-      groups: '可访问分组'
-    },
-    filters: {
-      platform: '平台',
-      billingMode: '计费方式',
-      allPlatforms: '全部平台',
-      allBillingModes: '全部计费方式'
-    },
-    columns: {
-      model: '模型',
-      billingMode: '计费方式',
-      inputPrice: '输入 / 1M',
-      outputPrice: '输出 / 1M',
-      cacheReadPrice: '缓存读 / 1M',
-      extraPrice: '图片/次/缓存写',
-      channel: '可用渠道',
-      groups: '可访问分组'
     }
   },
 
