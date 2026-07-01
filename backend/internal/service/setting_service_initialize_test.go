@@ -76,3 +76,14 @@ func TestSettingServiceInitializeDefaultSettingsDoesNotOverwriteExistingSettings
 	require.NotContains(t, repo.updates, SettingKeySiteName)
 	require.Equal(t, "false", repo.updates[SettingKeyEmailVerifyEnabled])
 }
+
+func TestSettingServiceGetAllSettingsParsesCompatibleRegistrationEnabled(t *testing.T) {
+	repo := &settingInitializeRepoStub{values: map[string]string{
+		SettingKeyRegistrationEnabled: "1",
+	}}
+	svc := NewSettingService(repo, &config.Config{})
+
+	settings, err := svc.GetAllSettings(context.Background())
+	require.NoError(t, err)
+	require.True(t, settings.RegistrationEnabled)
+}

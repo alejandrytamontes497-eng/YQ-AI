@@ -45,6 +45,29 @@ func stripMessageCacheControl(body []byte) []byte {
 	return body
 }
 
+func hasMessageCacheControl(body []byte) bool {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+	found := false
+	messages.ForEach(func(_, msg gjson.Result) bool {
+		content := msg.Get("content")
+		if !content.IsArray() {
+			return true
+		}
+		content.ForEach(func(_, block gjson.Result) bool {
+			if block.Get("cache_control").Exists() {
+				found = true
+				return false
+			}
+			return true
+		})
+		return !found
+	})
+	return found
+}
+
 // addMessageCacheBreakpoints 在 messages 上注入两个稳定的 cache 断点：
 //  1. 最后一条 message
 //  2. 当 messages 数量 ≥ 4 时，倒数第二个 role=user 的 message
@@ -88,8 +111,14 @@ func addMessageCacheBreakpoints(body []byte) []byte {
 
 // rewriteMessageCacheControlIfEnabled 按系统设置决定是否执行旧版 messages 缓存断点改写。
 func (s *GatewayService) rewriteMessageCacheControlIfEnabled(ctx context.Context, body []byte) []byte {
-	if s == nil || !s.isRewriteMessageCacheControlEnabled(ctx) {
+	if s == nil {
 		return body
+	}
+	if !s.isRewriteMessageCacheControlEnabled(ctx) {
+		if hasMessageCacheControl(body) {
+			return body
+		}
+		return addMessageCacheBreakpoints(body)
 	}
 	body = stripMessageCacheControl(body)
 	return addMessageCacheBreakpoints(body)

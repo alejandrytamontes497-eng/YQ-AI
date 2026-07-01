@@ -204,6 +204,22 @@ func TestRewriteMessageCacheControlIfEnabled_DefaultKeepsClientAnchors(t *testin
 	require.Equal(t, "5m", gjson.GetBytes(out, "messages.2.content.0.cache_control.ttl").String())
 }
 
+func TestRewriteMessageCacheControlIfEnabled_DefaultAddsProxyAnchorsWhenMissing(t *testing.T) {
+	body := []byte(`{"messages":[
+		{"role":"user","content":[{"type":"text","text":"q1"}]},
+		{"role":"assistant","content":[{"type":"text","text":"a1"}]},
+		{"role":"user","content":[{"type":"text","text":"q2"}]},
+		{"role":"assistant","content":[{"type":"text","text":"a2"}]}
+	]}`)
+
+	out := (&GatewayService{}).rewriteMessageCacheControlIfEnabled(context.Background(), body)
+
+	require.Equal(t, "5m", gjson.GetBytes(out, "messages.0.content.0.cache_control.ttl").String())
+	require.Equal(t, "5m", gjson.GetBytes(out, "messages.3.content.0.cache_control.ttl").String())
+	require.False(t, gjson.GetBytes(out, "messages.1.content.0.cache_control").Exists())
+	require.False(t, gjson.GetBytes(out, "messages.2.content.0.cache_control").Exists())
+}
+
 func TestRewriteMessageCacheControlIfEnabled_OptInPreservesLegacyRewrite(t *testing.T) {
 	body := []byte(`{"messages":[
 		{"role":"user","content":[{"type":"text","text":"stable","cache_control":{"type":"ephemeral","ttl":"1h"}}]},

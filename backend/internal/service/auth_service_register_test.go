@@ -272,6 +272,14 @@ func TestAuthService_Register_DisabledByDefault(t *testing.T) {
 	require.ErrorIs(t, err, ErrRegDisabled)
 }
 
+func TestAuthService_IsRegistrationEnabled_ParsesCompatibleTrueValue(t *testing.T) {
+	service := newAuthService(&userRepoStub{}, map[string]string{
+		SettingKeyRegistrationEnabled: "1",
+	}, nil, nil)
+
+	require.True(t, service.IsRegistrationEnabled(context.Background()))
+}
+
 func TestAuthService_Register_SnapshotsPlatformQuotaDefaults(t *testing.T) {
 	repo := &userRepoStub{nextID: 77}
 	quotaRepo := &userPlatformQuotaRepoStub{}

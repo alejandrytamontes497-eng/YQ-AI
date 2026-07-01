@@ -44,6 +44,11 @@ func coerceDeprecatedDingTalkCorpPolicy(policy string) string {
 	return policy
 }
 
+func parseBoolSetting(value string) bool {
+	parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+	return err == nil && parsed
+}
+
 var (
 	ErrRegistrationDisabled   = infraerrors.Forbidden("REGISTRATION_DISABLED", "registration is currently disabled")
 	ErrSettingNotFound        = infraerrors.NotFound("SETTING_NOT_FOUND", "setting not found")
@@ -894,7 +899,7 @@ func (s *SettingService) GetPublicSettings(ctx context.Context) (*PublicSettings
 	}
 
 	return &PublicSettings{
-		RegistrationEnabled:              settings[SettingKeyRegistrationEnabled] == "true",
+		RegistrationEnabled:              parseBoolSetting(settings[SettingKeyRegistrationEnabled]),
 		EmailVerifyEnabled:               emailVerifyEnabled,
 		ForceEmailOnThirdPartySignup:     settings[SettingKeyForceEmailOnThirdPartySignup] == "true",
 		RegistrationEmailSuffixWhitelist: registrationEmailSuffixWhitelist,
@@ -2497,7 +2502,7 @@ func (s *SettingService) IsRegistrationEnabled(ctx context.Context) bool {
 		// 安全默认：如果设置不存在或查询出错，默认关闭注册
 		return false
 	}
-	return value == "true"
+	return parseBoolSetting(value)
 }
 
 // IsBackendModeEnabled checks if backend mode is enabled
@@ -3207,7 +3212,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		apiKeyACLTrustForwardedIP = s.cfg.Security.TrustForwardedIPForAPIKeyACL
 	}
 	result := &SystemSettings{
-		RegistrationEnabled:              settings[SettingKeyRegistrationEnabled] == "true",
+		RegistrationEnabled:              parseBoolSetting(settings[SettingKeyRegistrationEnabled]),
 		EmailVerifyEnabled:               emailVerifyEnabled,
 		RegistrationEmailSuffixWhitelist: ParseRegistrationEmailSuffixWhitelist(settings[SettingKeyRegistrationEmailSuffixWhitelist]),
 		PromoCodeEnabled:                 settings[SettingKeyPromoCodeEnabled] != "false", // 默认启用
