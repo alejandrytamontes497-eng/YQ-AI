@@ -376,6 +376,11 @@ async function downloadImage(item: GalleryItem) {
     url = URL.createObjectURL(blob)
     mimeType = blob.type || item.mimeType
     revokeAfterClick = true
+  } else if (url.startsWith('data:')) {
+    const blob = dataURLToBlob(url)
+    url = URL.createObjectURL(blob)
+    mimeType = blob.type || item.mimeType
+    revokeAfterClick = true
   }
 
   const link = document.createElement('a')
