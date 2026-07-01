@@ -123,12 +123,33 @@ interface ImageModelOption extends SelectOption {
 interface GalleryItem {
   id: string
   src: string
+  originalUrl: string
   prompt: string
   revisedPrompt?: string
   model: string
   size: string
   quality: string
+  mimeType: string
   createdAt: string
+}
+
+interface StoredGalleryItem {
+  id: string
+  src?: string
+  prompt: string
+  revisedPrompt?: string
+  model: string
+  size: string
+  quality: string
+  mimeType?: string
+  createdAt: string
+}
+
+interface StoredImageRecord {
+  id: string
+  original: Blob
+  preview: Blob
+  mimeType: string
 }
 
 const { t } = useI18n()
@@ -148,6 +169,15 @@ const gallery = ref<GalleryItem[]>([])
 const copiedId = ref('')
 let abortController: AbortController | null = null
 let copyFeedbackTimer: number | null = null
+let imageDBPromise: Promise<IDBDatabase> | null = null
+const originalBlobs = new Map<string, Blob>()
+const objectUrls = new Set<string>()
+
+const PREVIEW_MAX_EDGE = 960
+const PREVIEW_QUALITY = 0.76
+const IMAGE_DB_NAME = 'image_generation_gallery'
+const IMAGE_DB_VERSION = 1
+const IMAGE_STORE_NAME = 'images'
 
 const sizeOptions: SelectOption[] = [
   { value: '1024x1024', label: '1:1 · 1024x1024 · 方图' },
@@ -182,7 +212,7 @@ const canGenerate = computed(() =>
 )
 
 onMounted(() => {
-  loadGallery()
+  void loadGallery()
   void loadData()
 })
 
@@ -191,6 +221,7 @@ onBeforeUnmount(() => {
   if (copyFeedbackTimer !== null) {
     window.clearTimeout(copyFeedbackTimer)
   }
+  revokeAllObjectUrls()
 })
 
 watch(gallery, persistGallery, { deep: true })
@@ -271,24 +302,46 @@ async function generate() {
       signal: abortController.signal
     })
 
-    const items = (response.data || [])
-      .map((item) => ({
-        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        src: item.b64_json ? `data:image/png;base64,${item.b64_json}` : item.url || '',
+    const generatedItems: Array<GalleryItem | null> = await Promise.all((response.data || []).map(async (item) => {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const mimeType = imageMimeType(item.output_format)
+      const originalBlob = await generatedImageBlob(item, mimeType)
+      if (!originalBlob) return null
+
+      const previewBlob = await createPreviewBlob(originalBlob)
+      originalBlobs.set(id, originalBlob)
+      await saveImageRecord({
+        id,
+        original: originalBlob,
+        preview: previewBlob,
+        mimeType: originalBlob.type || mimeType
+      })
+
+      return {
+        id,
+        src: objectUrlForBlob(previewBlob),
+        originalUrl: objectUrlForBlob(originalBlob),
         prompt: text,
         revisedPrompt: item.revised_prompt,
         model: option.model,
         size: String(selectedSize.value),
         quality: String(selectedQuality.value),
+        mimeType: originalBlob.type || mimeType,
         createdAt: new Date().toLocaleString()
-      }))
-      .filter((item) => item.src)
+      }
+    }))
+    const items = generatedItems.filter((item): item is GalleryItem => item !== null)
 
     if (items.length === 0) {
       throw new Error(t('imageGenerate.emptyResponse'))
     }
 
-    gallery.value = [...items, ...gallery.value].slice(0, 24)
+    const nextGallery = [...items, ...gallery.value]
+    for (const droppedItem of nextGallery.slice(24)) {
+      revokeGalleryItemUrls(droppedItem)
+      originalBlobs.delete(droppedItem.id)
+    }
+    gallery.value = nextGallery.slice(0, 24)
     appStore.showSuccess(t('imageGenerate.generateSuccess', { count: items.length }))
   } catch (error) {
     if ((error as { name?: string })?.name === 'AbortError') return
@@ -302,7 +355,7 @@ async function generate() {
 
 async function copyImage(item: GalleryItem) {
   try {
-    const blob = await imageBlob(item.src)
+    const blob = await originalBlobForItem(item)
     await navigator.clipboard.write([
       new ClipboardItem({ [blob.type || 'image/png']: blob })
     ])
@@ -314,20 +367,157 @@ async function copyImage(item: GalleryItem) {
 }
 
 async function downloadImage(item: GalleryItem) {
-  const blob = await imageBlob(item.src)
-  const url = URL.createObjectURL(blob)
+  let url = item.originalUrl
+  let revokeAfterClick = false
+  let mimeType = item.mimeType
+
+  if (!url) {
+    const blob = await originalBlobForItem(item)
+    url = URL.createObjectURL(blob)
+    mimeType = blob.type || item.mimeType
+    revokeAfterClick = true
+  }
+
   const link = document.createElement('a')
   link.href = url
-  link.download = `${item.model}-${Date.now()}.png`
+  link.download = `${safeFileName(item.model)}-${Date.now()}.${fileExtension(mimeType)}`
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)
-  URL.revokeObjectURL(url)
+  if (revokeAfterClick) {
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
 }
 
 async function imageBlob(src: string): Promise<Blob> {
+  if (src.startsWith('data:')) {
+    return dataURLToBlob(src)
+  }
   const response = await fetch(src)
   return response.blob()
+}
+
+async function generatedImageBlob(
+  item: { b64_json?: string; url?: string; download_url?: string },
+  fallbackMimeType: string
+): Promise<Blob | null> {
+  if (item.b64_json) {
+    return base64ToBlob(item.b64_json, fallbackMimeType)
+  }
+  const src = item.download_url || item.url
+  if (!src) return null
+  return imageBlob(src)
+}
+
+function base64ToBlob(base64: string, mimeType: string): Blob {
+  const binary = window.atob(base64)
+  const chunks: Uint8Array[] = []
+  const chunkSize = 8192
+  for (let offset = 0; offset < binary.length; offset += chunkSize) {
+    const slice = binary.slice(offset, offset + chunkSize)
+    const bytes = new Uint8Array(slice.length)
+    for (let index = 0; index < slice.length; index += 1) {
+      bytes[index] = slice.charCodeAt(index)
+    }
+    chunks.push(bytes)
+  }
+  return new Blob(chunks, { type: mimeType })
+}
+
+function dataURLToBlob(dataURL: string): Blob {
+  const [header, payload = ''] = dataURL.split(',', 2)
+  const mimeType = /data:([^;]+)/.exec(header)?.[1] || 'image/png'
+  if (header.includes(';base64')) {
+    return base64ToBlob(payload, mimeType)
+  }
+  return new Blob([decodeURIComponent(payload)], { type: mimeType })
+}
+
+async function createPreviewBlob(originalBlob: Blob): Promise<Blob> {
+  try {
+    const bitmap = await createImageBitmap(originalBlob)
+    const scale = Math.min(1, PREVIEW_MAX_EDGE / Math.max(bitmap.width, bitmap.height))
+    const width = Math.max(1, Math.round(bitmap.width * scale))
+    const height = Math.max(1, Math.round(bitmap.height * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) {
+      bitmap.close()
+      return originalBlob
+    }
+    ctx.drawImage(bitmap, 0, 0, width, height)
+    bitmap.close()
+    const previewBlob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, 'image/webp', PREVIEW_QUALITY)
+    })
+    return previewBlob || originalBlob
+  } catch {
+    return originalBlob
+  }
+}
+
+async function originalBlobForItem(item: GalleryItem): Promise<Blob> {
+  const cached = originalBlobs.get(item.id)
+  if (cached) return cached
+  const record = await getImageRecord(item.id)
+  if (record?.original) {
+    originalBlobs.set(item.id, record.original)
+    return record.original
+  }
+  return imageBlob(item.originalUrl || item.src)
+}
+
+function objectUrlForBlob(blob: Blob): string {
+  const url = URL.createObjectURL(blob)
+  objectUrls.add(url)
+  return url
+}
+
+function revokeAllObjectUrls() {
+  for (const url of objectUrls) {
+    URL.revokeObjectURL(url)
+  }
+  objectUrls.clear()
+}
+
+function revokeGalleryItemUrls(item: GalleryItem) {
+  for (const url of [item.src, item.originalUrl]) {
+    if (objectUrls.has(url)) {
+      URL.revokeObjectURL(url)
+      objectUrls.delete(url)
+    }
+  }
+}
+
+function imageMimeType(format?: string): string {
+  switch (String(format || '').trim().toLowerCase()) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg'
+    case 'webp':
+      return 'image/webp'
+    case 'png':
+    default:
+      return 'image/png'
+  }
+}
+
+function fileExtension(mimeType: string): string {
+  switch (mimeType.toLowerCase()) {
+    case 'image/jpeg':
+      return 'jpg'
+    case 'image/webp':
+      return 'webp'
+    case 'image/png':
+    default:
+      return 'png'
+  }
+}
+
+function safeFileName(value: string): string {
+  return String(value || 'image').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-').slice(0, 80) || 'image'
 }
 
 function showCopied(id: string) {
@@ -346,12 +536,21 @@ function galleryStorageKey(): string {
   return `image_generation_gallery_v1:${userID}`
 }
 
-function loadGallery() {
+async function loadGallery() {
   try {
     const raw = localStorage.getItem(galleryStorageKey())
     if (!raw) return
-    const parsed = JSON.parse(raw) as GalleryItem[]
-    gallery.value = Array.isArray(parsed) ? parsed.filter((item) => item?.src).slice(0, 24) : []
+    const parsed = JSON.parse(raw) as StoredGalleryItem[]
+    if (!Array.isArray(parsed)) return
+
+    const hydrated: GalleryItem[] = []
+    for (const item of parsed.slice(0, 24)) {
+      const restored = await restoreGalleryItem(item)
+      if (restored) {
+        hydrated.push(restored)
+      }
+    }
+    gallery.value = hydrated
   } catch {
     gallery.value = []
   }
@@ -359,14 +558,127 @@ function loadGallery() {
 
 function persistGallery() {
   try {
-    localStorage.setItem(galleryStorageKey(), JSON.stringify(gallery.value.slice(0, 24)))
+    const stored = gallery.value.slice(0, 24).map((item) => ({
+      id: item.id,
+      prompt: item.prompt,
+      revisedPrompt: item.revisedPrompt,
+      model: item.model,
+      size: item.size,
+      quality: item.quality,
+      mimeType: item.mimeType,
+      createdAt: item.createdAt
+    }))
+    localStorage.setItem(galleryStorageKey(), JSON.stringify(stored))
   } catch {
     // Local gallery is optional.
   }
 }
 
-function clearGallery() {
+async function restoreGalleryItem(item: StoredGalleryItem): Promise<GalleryItem | null> {
+  const record = await getImageRecord(item.id)
+  if (record) {
+    originalBlobs.set(item.id, record.original)
+    return {
+      id: item.id,
+      src: objectUrlForBlob(record.preview),
+      originalUrl: objectUrlForBlob(record.original),
+      prompt: item.prompt,
+      revisedPrompt: item.revisedPrompt,
+      model: item.model,
+      size: item.size,
+      quality: item.quality,
+      mimeType: record.mimeType || item.mimeType || record.original.type || 'image/png',
+      createdAt: item.createdAt
+    }
+  }
+
+  if (!item.src) return null
+  try {
+    const original = await imageBlob(item.src)
+    const preview = await createPreviewBlob(original)
+    const mimeType = original.type || item.mimeType || 'image/png'
+    originalBlobs.set(item.id, original)
+    await saveImageRecord({ id: item.id, original, preview, mimeType })
+    return {
+      id: item.id,
+      src: objectUrlForBlob(preview),
+      originalUrl: objectUrlForBlob(original),
+      prompt: item.prompt,
+      revisedPrompt: item.revisedPrompt,
+      model: item.model,
+      size: item.size,
+      quality: item.quality,
+      mimeType,
+      createdAt: item.createdAt
+    }
+  } catch {
+    return null
+  }
+}
+
+async function clearGallery() {
   gallery.value = []
+  originalBlobs.clear()
+  revokeAllObjectUrls()
+  await clearImageRecords()
+}
+
+function openImageDB(): Promise<IDBDatabase> {
+  if (imageDBPromise) return imageDBPromise
+  imageDBPromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(IMAGE_DB_NAME, IMAGE_DB_VERSION)
+    request.onupgradeneeded = () => {
+      const db = request.result
+      if (!db.objectStoreNames.contains(IMAGE_STORE_NAME)) {
+        db.createObjectStore(IMAGE_STORE_NAME, { keyPath: 'id' })
+      }
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+  return imageDBPromise
+}
+
+async function saveImageRecord(record: StoredImageRecord): Promise<void> {
+  try {
+    const db = await openImageDB()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(IMAGE_STORE_NAME, 'readwrite')
+      tx.objectStore(IMAGE_STORE_NAME).put(record)
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  } catch {
+    // IndexedDB is an optimization; download still works in the current session.
+  }
+}
+
+async function getImageRecord(id: string): Promise<StoredImageRecord | null> {
+  try {
+    const db = await openImageDB()
+    return await new Promise<StoredImageRecord | null>((resolve, reject) => {
+      const tx = db.transaction(IMAGE_STORE_NAME, 'readonly')
+      const request = tx.objectStore(IMAGE_STORE_NAME).get(id)
+      request.onsuccess = () => resolve((request.result as StoredImageRecord | undefined) ?? null)
+      request.onerror = () => reject(request.error)
+    })
+  } catch {
+    return null
+  }
+}
+
+async function clearImageRecords(): Promise<void> {
+  try {
+    const db = await openImageDB()
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(IMAGE_STORE_NAME, 'readwrite')
+      tx.objectStore(IMAGE_STORE_NAME).clear()
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+  } catch {
+    // Ignore unavailable storage.
+  }
 }
 
 function imageGenerationErrorMessage(error: unknown, fallback: string): string {
