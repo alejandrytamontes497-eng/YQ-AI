@@ -1175,6 +1175,54 @@ func deleteJSONPathBytes(body []byte, path string) ([]byte, bool) {
 	return next, true
 }
 
+var claudeOpusVersionRe = regexp.MustCompile(`claude-opus-(\d+)[.-](\d+)`)
+var claudeFamilyMajorVersionRe = regexp.MustCompile(`claude-[a-z]+-(\d+)(?:[.-]|$)`)
+
+func claudeModelOmitsSamplingParams(modelID string) bool {
+	lower := strings.ToLower(strings.TrimSpace(modelID))
+	if lower == "" {
+		return false
+	}
+
+	if match := claudeOpusVersionRe.FindStringSubmatch(lower); len(match) == 3 {
+		major, _ := strconv.Atoi(match[1])
+		minor, _ := strconv.Atoi(match[2])
+		if major > 4 || (major == 4 && minor >= 7) {
+			return true
+		}
+	}
+
+	if match := claudeFamilyMajorVersionRe.FindStringSubmatch(lower); len(match) == 2 {
+		major, _ := strconv.Atoi(match[1])
+		return major >= 5
+	}
+	return false
+}
+
+func sanitizeAnthropicSamplingParamsForModel(body []byte, modelID string) ([]byte, bool) {
+	if len(body) == 0 || !claudeModelOmitsSamplingParams(modelID) {
+		return body, false
+	}
+
+	out := body
+	modified := false
+	for _, path := range []string{"temperature", "top_p", "top_k"} {
+		if !gjson.GetBytes(out, path).Exists() {
+			continue
+		}
+		next, ok := deleteJSONPathBytes(out, path)
+		if !ok {
+			continue
+		}
+		out = next
+		modified = true
+	}
+	if !modified {
+		return body, false
+	}
+	return out, true
+}
+
 func normalizeClaudeOAuthSystemBody(body []byte, opts claudeOAuthNormalizeOptions) ([]byte, bool) {
 	sys := gjson.GetBytes(body, "system")
 	if !sys.Exists() {
@@ -1295,10 +1343,12 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 		}
 	}
 
-	// temperature：真实 Claude Code CLI 总是发送 temperature（默认 1，客户端可覆盖）。
-	// 之前的实现直接 delete 会导致 payload 缺字段，与真实 CLI 字节级不一致。
-	// 策略：客户端传了什么就透传；没传则补默认 1。
-	if !gjson.GetBytes(out, "temperature").Exists() {
+	// 新 Claude 模型废弃 temperature/top_p/top_k，字段存在即可能被上游 400 拒收。
+	// 其他模型仍按 Claude Code CLI 行为：客户端传了什么就透传；没传则补默认 1。
+	if next, changed := sanitizeAnthropicSamplingParamsForModel(out, modelID); changed {
+		out = next
+		modified = true
+	} else if !claudeModelOmitsSamplingParams(modelID) && !gjson.GetBytes(out, "temperature").Exists() {
 		if next, ok := setJSONValueBytes(out, "temperature", 1); ok {
 			out = next
 			modified = true
@@ -5823,6 +5873,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, clientBeta); changed {
 		body = sanitized
 	}
+	if sanitized, changed := sanitizeAnthropicSamplingParamsForModel(body, gjson.GetBytes(body, "model").String()); changed {
+		body = sanitized
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -6771,6 +6824,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBetaHeader); changed {
 		body = sanitized
 	}
+	if sanitized, changed := sanitizeAnthropicSamplingParamsForModel(body, modelID); changed {
+		body = sanitized
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -6938,6 +6994,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 	// 能力维度 sanitize：基于最终 beta（而非原始 client 值）决定是否保留 body 中的
 	// context_management，与 Anthropic 直连 / Bedrock 路径对称。
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(vertexBody, finalBeta); changed {
+		vertexBody = sanitized
+	}
+	if sanitized, changed := sanitizeAnthropicSamplingParamsForModel(vertexBody, modelID); changed {
 		vertexBody = sanitized
 	}
 	fullURL, err := buildVertexAnthropicURL(account.VertexProjectID(), account.VertexLocation(modelID), modelID, reqStream)

@@ -353,6 +353,52 @@ func readUpstreamBodyForTest(t *testing.T, req *http.Request) []byte {
 	return b
 }
 
+func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_StripsDeprecatedSamplingParamsForNewClaudeModels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"claude-opus-4-8","temperature":0.7,"top_p":0.9,"top_k":40,"messages":[]}`)
+	account := newAnthropicAPIKeyPassthroughAccountForBetaTest()
+	svc := &GatewayService{cfg: &config.Config{}}
+
+	req, wireBody, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(
+		context.Background(), c, account, body, "upstream-key",
+	)
+	require.NoError(t, err)
+
+	for _, got := range [][]byte{wireBody, readUpstreamBodyForTest(t, req)} {
+		require.False(t, gjson.GetBytes(got, "temperature").Exists())
+		require.False(t, gjson.GetBytes(got, "top_p").Exists())
+		require.False(t, gjson.GetBytes(got, "top_k").Exists())
+		require.Equal(t, "claude-opus-4-8", gjson.GetBytes(got, "model").String())
+	}
+}
+
+func TestBuildUpstreamRequestOAuth_StripsDeprecatedSamplingParamsForNewClaudeModels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	body := []byte(`{"model":"claude-fable-5","temperature":1,"top_p":0.8,"top_k":20,"messages":[]}`)
+	account := &Account{ID: 502, Platform: PlatformAnthropic, Type: AccountTypeOAuth}
+	svc := &GatewayService{cfg: &config.Config{}}
+
+	req, wireBody, err := svc.buildUpstreamRequest(
+		context.Background(), c, account, body, "oauth-token", "oauth", "claude-fable-5", false, false,
+	)
+	require.NoError(t, err)
+
+	for _, got := range [][]byte{wireBody, readUpstreamBodyForTest(t, req)} {
+		require.False(t, gjson.GetBytes(got, "temperature").Exists())
+		require.False(t, gjson.GetBytes(got, "top_p").Exists())
+		require.False(t, gjson.GetBytes(got, "top_k").Exists())
+		require.Equal(t, "claude-fable-5", gjson.GetBytes(got, "model").String())
+	}
+}
+
 func TestBuildUpstreamRequestAnthropicAPIKeyPassthrough_StripsContextManagementWhenClientHeaderMissingBeta(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

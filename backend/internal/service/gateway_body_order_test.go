@@ -128,6 +128,18 @@ func TestNormalizeClaudeOAuthRequestBody_PreservesTopLevelFieldOrder(t *testing.
 	require.Contains(t, resultStr, `"max_tokens":128000`)
 }
 
+func TestNormalizeClaudeOAuthRequestBody_StripsDeprecatedSamplingParamsForNewClaudeModels(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-7","temperature":0.2,"top_p":0.9,"top_k":40,"messages":[]}`)
+
+	result, modelID := normalizeClaudeOAuthRequestBody(body, "claude-opus-4-7", claudeOAuthNormalizeOptions{})
+
+	require.Equal(t, "claude-opus-4-7", modelID)
+	require.False(t, gjson.GetBytes(result, "temperature").Exists())
+	require.False(t, gjson.GetBytes(result, "top_p").Exists())
+	require.False(t, gjson.GetBytes(result, "top_k").Exists())
+	require.True(t, gjson.GetBytes(result, "max_tokens").Exists())
+}
+
 func TestInjectClaudeCodePrompt_PreservesFieldOrder(t *testing.T) {
 	body := []byte(`{"alpha":1,"system":[{"id":"block-1","type":"text","text":"Custom"}],"messages":[],"omega":2}`)
 

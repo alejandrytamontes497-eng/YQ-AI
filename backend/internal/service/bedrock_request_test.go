@@ -22,6 +22,17 @@ func TestPrepareBedrockRequestBody_BasicFields(t *testing.T) {
 	assert.Equal(t, int64(1024), gjson.GetBytes(result, "max_tokens").Int())
 }
 
+func TestPrepareBedrockRequestBody_StripsDeprecatedSamplingParamsForNewClaudeModels(t *testing.T) {
+	input := `{"model":"claude-opus-4-7","temperature":0.7,"top_p":0.9,"top_k":40,"stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`
+	result, err := PrepareBedrockRequestBody([]byte(input), "us.anthropic.claude-opus-4-7-v1", "")
+	require.NoError(t, err)
+
+	assert.False(t, gjson.GetBytes(result, "temperature").Exists())
+	assert.False(t, gjson.GetBytes(result, "top_p").Exists())
+	assert.False(t, gjson.GetBytes(result, "top_k").Exists())
+	assert.Equal(t, int64(1024), gjson.GetBytes(result, "max_tokens").Int())
+}
+
 func TestPrepareBedrockRequestBody_OutputFormatInlineSchema(t *testing.T) {
 	t.Run("schema inlined into last user message array content", func(t *testing.T) {
 		input := `{"model":"claude-sonnet-4-5","output_format":{"type":"json","schema":{"name":"string"}},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`

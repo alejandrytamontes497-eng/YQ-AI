@@ -132,7 +132,7 @@ func createTestPayload(modelID string) (map[string]any, error) {
 		return nil, err
 	}
 
-	return map[string]any{
+	payload := map[string]any{
 		"model": modelID,
 		"messages": []map[string]any{
 			{
@@ -160,10 +160,13 @@ func createTestPayload(modelID string) (map[string]any, error) {
 		"metadata": map[string]string{
 			"user_id": sessionID,
 		},
-		"max_tokens":  1024,
-		"temperature": 1,
-		"stream":      true,
-	}, nil
+		"max_tokens": 1024,
+		"stream":     true,
+	}
+	if !claudeModelOmitsSamplingParams(modelID) {
+		payload["temperature"] = 1
+	}
+	return payload, nil
 }
 
 // TestAccountConnection tests an account's connection by sending a test request
@@ -418,8 +421,10 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 				},
 			},
 		},
-		"max_tokens":  256,
-		"temperature": 1,
+		"max_tokens": 256,
+	}
+	if !claudeModelOmitsSamplingParams(testModelID) {
+		bedrockPayload["temperature"] = 1
 	}
 	bedrockBody, _ := json.Marshal(bedrockPayload)
 

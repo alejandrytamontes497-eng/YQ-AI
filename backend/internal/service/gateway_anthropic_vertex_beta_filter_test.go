@@ -123,6 +123,24 @@ func TestVertexBetaFilter_BodySanitizeKeysOnFinalBeta(t *testing.T) {
 	require.Empty(t, getHeaderRaw(req.Header, "anthropic-beta"))
 }
 
+func TestVertexRequest_StripsDeprecatedSamplingParamsForNewClaudeModels(t *testing.T) {
+	c := newVertexBetaTestContext(t, "")
+
+	body := []byte(`{"model":"claude-opus-4-7","temperature":0.3,"top_p":0.9,"top_k":40,"max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`)
+
+	svc := &GatewayService{}
+	req, _, err := svc.buildUpstreamRequest(
+		context.Background(), c, newVertexServiceAccount(405), body,
+		"vertex-token", "service_account", "claude-opus-4-7@20260417", false, false,
+	)
+	require.NoError(t, err)
+
+	got := readRequestBodyForTest(t, req)
+	require.False(t, gjson.GetBytes(got, "temperature").Exists())
+	require.False(t, gjson.GetBytes(got, "top_p").Exists())
+	require.False(t, gjson.GetBytes(got, "top_k").Exists())
+}
+
 // BetaPolicy block 规则在 Vertex 路径同样生效：管理员 block 某 token，客户端带它 → 直接报错。
 func TestVertexBetaFilter_BlocksViaBetaPolicy(t *testing.T) {
 	settings := &BetaPolicySettings{
