@@ -390,6 +390,7 @@ export default {
     users: 'Users',
     groups: 'Groups',
     channels: 'Channels',
+    modelSquare: 'Model Square',
     availableChannels: 'Available Channels',
     subscriptions: 'Subscriptions',
     accounts: 'Accounts',
@@ -1156,6 +1157,38 @@ export default {
       intervals: 'Tiered Pricing',
       unitPerMillion: '/ 1M tokens',
       unitPerRequest: '/ request'
+    }
+  },
+
+  modelSquare: {
+    title: 'Model Square',
+    description: 'View all models available to your account, including platform, pricing, channels, and accessible groups.',
+    searchPlaceholder: 'Search models, platforms, channels, or groups...',
+    empty: 'No available models',
+    noPricing: 'Pricing not configured',
+    noGroups: 'No accessible groups',
+    intervalCount: '{count} tiers',
+    stats: {
+      models: 'Available Models',
+      platforms: 'Platforms',
+      channels: 'Channels',
+      groups: 'Accessible Groups'
+    },
+    filters: {
+      platform: 'Platform',
+      billingMode: 'Billing Mode',
+      allPlatforms: 'All Platforms',
+      allBillingModes: 'All Billing Modes'
+    },
+    columns: {
+      model: 'Model',
+      billingMode: 'Billing Mode',
+      inputPrice: 'Input / 1M',
+      outputPrice: 'Output / 1M',
+      cacheReadPrice: 'Cache Read / 1M',
+      extraPrice: 'Image/Request/Cache Write',
+      channel: 'Channel',
+      groups: 'Accessible Groups'
     }
   },
 
