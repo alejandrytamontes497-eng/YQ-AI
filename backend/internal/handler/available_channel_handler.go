@@ -114,6 +114,19 @@ type userAvailableChannel struct {
 // List 列出当前用户可见的「可用渠道」。
 // GET /api/v1/channels/available
 func (h *AvailableChannelHandler) List(c *gin.Context) {
+	h.listVisible(c, true)
+}
+
+// ListModels 列出当前用户可见的模型广场数据。
+// GET /api/v1/models/available
+//
+// 模型广场是普通用户的常驻只读入口，不跟随「可用渠道」菜单开关隐藏。
+// 响应仍复用同一套白名单 DTO 和可访问分组过滤，避免泄露后台账号字段。
+func (h *AvailableChannelHandler) ListModels(c *gin.Context) {
+	h.listVisible(c, false)
+}
+
+func (h *AvailableChannelHandler) listVisible(c *gin.Context, requireFeatureEnabled bool) {
 	subject, ok := middleware.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
@@ -122,7 +135,7 @@ func (h *AvailableChannelHandler) List(c *gin.Context) {
 
 	// Feature 未启用时返回空数组（不暴露渠道信息）。检查放在认证之后，
 	// 保持与未开关前的 401 行为一致：未登录先 401，登录后再按开关决定。
-	if !h.featureEnabled(c) {
+	if requireFeatureEnabled && !h.featureEnabled(c) {
 		response.Success(c, []userAvailableChannel{})
 		return
 	}

@@ -352,7 +352,7 @@ async function loadModels() {
   loading.value = true
   try {
     const [list, rates] = await Promise.all([
-      userChannelsAPI.getAvailable(),
+      userChannelsAPI.getAvailableModels(),
       userGroupsAPI.getUserGroupRates().catch((err: unknown) => {
         console.error('Failed to load user group rates:', err)
         return {} as Record<number, number>

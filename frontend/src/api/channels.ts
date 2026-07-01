@@ -71,6 +71,14 @@ export async function getAvailable(options?: { signal?: AbortSignal }): Promise<
   return data
 }
 
-export const userChannelsAPI = { getAvailable }
+/** 列出当前用户可见的模型广场数据。常驻入口，不受「可用渠道」菜单开关影响。 */
+export async function getAvailableModels(options?: { signal?: AbortSignal }): Promise<UserAvailableChannel[]> {
+  const { data } = await apiClient.get<UserAvailableChannel[]>('/models/available', {
+    signal: options?.signal
+  })
+  return data
+}
+
+export const userChannelsAPI = { getAvailable, getAvailableModels }
 
 export default userChannelsAPI
