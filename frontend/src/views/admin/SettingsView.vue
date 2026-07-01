@@ -8,6 +8,22 @@
         ></div>
       </div>
 
+      <div
+        v-else-if="loadFailed"
+        class="rounded-lg border border-red-200 bg-red-50 p-6 text-center dark:border-red-800 dark:bg-red-900/20"
+      >
+        <p class="text-sm font-medium text-red-700 dark:text-red-300">
+          {{ t("admin.settings.failedToLoad") }}
+        </p>
+        <button
+          type="button"
+          class="btn-primary mt-4"
+          @click="loadSettings"
+        >
+          {{ t("common.retry") }}
+        </button>
+      </div>
+
       <!-- Settings Form -->
       <form v-else @submit.prevent="saveSettings" class="space-y-6" novalidate>
         <!-- Tab Navigation -->
@@ -7830,7 +7846,7 @@ type SettingsForm = Omit<
 };
 
 const form = reactive<SettingsForm>({
-  registration_enabled: true,
+  registration_enabled: false,
   email_verify_enabled: false,
   registration_email_suffix_whitelist: [],
   promo_code_enabled: true,
@@ -8937,6 +8953,11 @@ function findDuplicateDefaultSubscription(
 }
 
 async function saveSettings() {
+  if (loadFailed.value) {
+    appStore.showError(t("admin.settings.failedToLoad"));
+    return;
+  }
+
   saving.value = true;
   try {
     const normalizedTableDefaultPageSize = Math.floor(
@@ -9413,7 +9434,19 @@ async function saveSettings() {
     // Save web search emulation config separately (errors handled internally)
     const wsOk = await saveWebSearchConfig();
     // Refresh cached settings so sidebar/header update immediately
-    await appStore.fetchPublicSettings(true);
+    const refreshedPublicSettings = await appStore.fetchPublicSettings(true);
+    if (
+      refreshedPublicSettings &&
+      refreshedPublicSettings.registration_enabled !== updated.registration_enabled
+    ) {
+      appStore.showError(
+        localText(
+          "注册开关已保存，但公开配置尚未同步，请刷新后重试。",
+          "Registration setting was saved, but public config is not synced yet. Refresh and try again.",
+        ),
+      );
+      return;
+    }
     await adminSettingsStore.fetch(true);
     if (wsOk) {
       appStore.showSuccess(t("admin.settings.settingsSaved"));
