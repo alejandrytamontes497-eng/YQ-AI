@@ -66,7 +66,7 @@
         <section id="client-config" class="docs-section">
           <div class="section-heading-row">
             <div>
-              <h3>客户端配置</h3>
+              <h3>使用密钥文档</h3>
               <p>
                 下面是“使用密钥”中的常用客户端配置说明。文档中统一使用占位密钥
                 <code>YOUR_API_KEY</code>，复制后替换成你自己的 API Key。
@@ -233,7 +233,8 @@ interface ClientGuide {
 }
 
 const origin = computed(() => window.location.origin.replace(/\/+$/, ''))
-const apiBaseUrl = computed(() => `${origin.value}/v1`)
+const apiBaseUrl = computed(() => `${origin.value}`)
+const apiBaseV1 = computed(() => `${origin.value}/v1`)
 const placeholderKey = 'YOUR_API_KEY'
 const activeClient = ref('codex')
 
@@ -248,7 +249,7 @@ const sections: DocSection[] = [
   { id: 'errors', title: '错误处理', icon: 'exclamationCircle' }
 ]
 
-const quickstartCode = computed(() => `curl ${apiBaseUrl.value}/chat/completions \\
+const quickstartCode = computed(() => `curl ${apiBaseV1.value}/chat/completions \\
   -H "Authorization: Bearer ${placeholderKey}" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -290,7 +291,7 @@ const chatResponseCode = `{
   }
 }`
 
-const modelsCode = computed(() => `curl ${apiBaseUrl.value}/models \\
+const modelsCode = computed(() => `curl ${apiBaseV1.value}/models \\
   -H "Authorization: Bearer ${placeholderKey}"`)
 
 const clients = computed<ClientGuide[]>(() => [
@@ -305,13 +306,14 @@ const clients = computed<ClientGuide[]>(() => [
       return [
         {
           path: `${configDir}/config.toml`,
-          hint: 'Windows 用户可使用 %userprofile%\\.codex\\config.toml。',
+          hint: '请确保以下内容位于 config.toml 文件的开头部分',
           content: `model_provider = "OpenAI"
 model = "gpt-5.5"
 review_model = "gpt-5.5"
 model_reasoning_effort = "xhigh"
 disable_response_storage = true
 network_access = "enabled"
+windows_wsl_setup_acknowledged = true
 
 [model_providers.OpenAI]
 name = "OpenAI"
@@ -374,15 +376,15 @@ $env:CLAUDE_CODE_ATTRIBUTION_HEADER=0`
     files: () => [
       {
         path: 'macOS / Linux',
-        content: `export GOOGLE_GEMINI_BASE_URL="${origin.value}/v1beta"
+        content: `export GOOGLE_GEMINI_BASE_URL="${apiBaseUrl.value}"
 export GEMINI_API_KEY="${placeholderKey}"
-export GEMINI_MODEL="gemini-2.0-flash"`
+export GEMINI_MODEL="gemini-2.0-flash"  # 如果你有 Gemini 3 权限可以填：gemini-3-pro-preview`
       },
       {
         path: 'PowerShell',
-        content: `$env:GOOGLE_GEMINI_BASE_URL="${origin.value}/v1beta"
+        content: `$env:GOOGLE_GEMINI_BASE_URL="${apiBaseUrl.value}"
 $env:GEMINI_API_KEY="${placeholderKey}"
-$env:GEMINI_MODEL="gemini-2.0-flash"`
+$env:GEMINI_MODEL="gemini-2.0-flash"  # 如果你有 Gemini 3 权限可以填：gemini-3-pro-preview`
       }
     ]
   },
@@ -391,18 +393,20 @@ $env:GEMINI_MODEL="gemini-2.0-flash"`
     label: 'Antigravity',
     icon: 'sparkles',
     description: '适用于 Antigravity 分组，可按客户端选择 Claude 或 Gemini 兼容入口。',
-    note: 'Claude 入口使用 /antigravity/v1；Gemini 入口使用 /antigravity/v1beta。',
+    note: 'Claude 与 Gemini 入口都使用 /antigravity 前缀，请按所用客户端选择对应配置。',
     files: () => [
       {
         path: 'Claude Code',
-        content: `export ANTHROPIC_BASE_URL="${origin.value}/antigravity/v1"
-export ANTHROPIC_AUTH_TOKEN="${placeholderKey}"`
+        content: `export ANTHROPIC_BASE_URL="${apiBaseUrl.value}/antigravity"
+export ANTHROPIC_AUTH_TOKEN="${placeholderKey}"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+export CLAUDE_CODE_ATTRIBUTION_HEADER=0`
       },
       {
         path: 'Gemini CLI',
-        content: `export GOOGLE_GEMINI_BASE_URL="${origin.value}/antigravity/v1beta"
+        content: `export GOOGLE_GEMINI_BASE_URL="${apiBaseUrl.value}/antigravity"
 export GEMINI_API_KEY="${placeholderKey}"
-export GEMINI_MODEL="gemini-2.5-flash"`
+export GEMINI_MODEL="gemini-2.0-flash"  # 如果你有 Gemini 3 权限可以填：gemini-3-pro-preview`
       }
     ]
   },
@@ -412,47 +416,74 @@ export GEMINI_MODEL="gemini-2.5-flash"`
     icon: 'terminal',
     description: '适用于需要配置 provider 的 OpenCode 客户端。示例展示 OpenAI 兼容 provider。',
     note: '如果使用 Anthropic、Gemini 或 Antigravity 分组，把 provider 名称、npm 包和模型列表调整为对应平台即可。',
-    files: () => [
-      {
-        path: 'opencode.json',
-        hint: '配置文件路径通常为 ~/.config/opencode/opencode.json 或项目内 opencode.json。',
-        content: `{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "openai": {
-      "options": {
-        "baseURL": "${apiBaseUrl.value}",
-        "apiKey": "${placeholderKey}"
-      },
-      "models": {
-        "gpt-5.5": {
-          "name": "GPT-5.5",
-          "limit": {
-            "context": 1050000,
-            "output": 128000
-          },
-          "options": {
-            "store": false
+    files: () => {
+      const config = {
+        provider: {
+          openai: {
+            options: {
+              baseURL: apiBaseV1.value,
+              apiKey: placeholderKey
+            },
+            models: {
+              'gpt-5.2': {
+                name: 'GPT-5.2',
+                limit: { context: 400000, output: 128000 },
+                options: { store: false },
+                variants: { low: {}, medium: {}, high: {}, xhigh: {} }
+              },
+              'gpt-5.5': {
+                name: 'GPT-5.5',
+                limit: { context: 1050000, output: 128000 },
+                options: { store: false },
+                variants: { low: {}, medium: {}, high: {}, xhigh: {} }
+              },
+              'gpt-5.4': {
+                name: 'GPT-5.4',
+                limit: { context: 1050000, output: 128000 },
+                options: { store: false },
+                variants: { low: {}, medium: {}, high: {}, xhigh: {} }
+              },
+              'gpt-5.4-mini': {
+                name: 'GPT-5.4 Mini',
+                limit: { context: 400000, output: 128000 },
+                options: { store: false },
+                variants: { low: {}, medium: {}, high: {}, xhigh: {} }
+              },
+              'gpt-5.3-codex-spark': {
+                name: 'GPT-5.3 Codex Spark',
+                limit: { context: 128000, output: 32000 },
+                options: { store: false },
+                variants: { low: {}, medium: {}, high: {}, xhigh: {} }
+              },
+              'gpt-5.3-codex': {
+                name: 'GPT-5.3 Codex',
+                limit: { context: 400000, output: 128000 },
+                options: { store: false },
+                variants: { low: {}, medium: {}, high: {}, xhigh: {} }
+              },
+              'codex-mini-latest': {
+                name: 'Codex Mini',
+                limit: { context: 200000, output: 100000 },
+                options: { store: false },
+                variants: { low: {}, medium: {}, high: {} }
+              }
+            }
           }
+        },
+        agent: {
+          build: { options: { store: false } },
+          plan: { options: { store: false } }
+        },
+        $schema: 'https://opencode.ai/config.json'
+      }
+      return [
+        {
+          path: 'opencode.json',
+          hint: '配置文件路径：~/.config/opencode/opencode.json（或 opencode.jsonc），不存在需手动创建。可使用默认 provider（openai/anthropic/google）或自定义 provider_id。API Key 支持直接配置或通过客户端 /connect 命令配置。示例仅供参考，模型与选项可按需调整。',
+          content: JSON.stringify(config, null, 2)
         }
-      }
+      ]
     }
-  },
-  "agent": {
-    "build": {
-      "options": {
-        "store": false
-      }
-    },
-    "plan": {
-      "options": {
-        "store": false
-      }
-    }
-  }
-}`
-      }
-    ]
   }
 ])
 
