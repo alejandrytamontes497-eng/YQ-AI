@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net/http"
 	"runtime"
 	"runtime/debug"
 	"strconv"
@@ -498,6 +499,20 @@ func releaseOpsCaptureWriter(w *opsCaptureWriter) {
 	opsCaptureWriterPool.Put(w)
 }
 
+func (w *opsCaptureWriter) Status() int {
+	if w == nil || w.ResponseWriter == nil {
+		return http.StatusOK
+	}
+	return w.ResponseWriter.Status()
+}
+
+func (w *opsCaptureWriter) Written() bool {
+	if w == nil || w.ResponseWriter == nil {
+		return false
+	}
+	return w.ResponseWriter.Written()
+}
+
 func (w *opsCaptureWriter) Write(b []byte) (int, error) {
 	if w.Status() >= 400 && w.limit > 0 && w.buf.Len() < w.limit {
 		remaining := w.limit - w.buf.Len()
@@ -533,10 +548,10 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		w := acquireOpsCaptureWriter(originalWriter)
 		defer func() {
 			// Restore the original writer before returning so outer middlewares
-			// don't observe a pooled wrapper that has been released.
-			if c.Writer == w {
-				c.Writer = originalWriter
-			}
+			// don't observe a pooled wrapper that has been released. This must be
+			// unconditional because panic unwinding can leave c.Writer pointing at
+			// this wrapper even when downstream code touched the writer chain.
+			c.Writer = originalWriter
 			releaseOpsCaptureWriter(w)
 		}()
 		c.Writer = w
