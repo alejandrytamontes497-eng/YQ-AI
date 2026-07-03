@@ -901,6 +901,9 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		if !clientOutputStarted {
 			return result, s.newOpenAIStreamFailoverError(c, account, false, requestID, nil, message)
 		}
+		if _, err := finalizeStream(); err != nil {
+			return result, err
+		}
 		s.recordOpenAIMessagesStreamUpstreamError(c, account, requestID, "stream_missing_terminal", message)
 		return result, fmt.Errorf("stream usage incomplete: missing terminal event")
 	}
