@@ -123,6 +123,35 @@ describe('UseKeyModal', () => {
     expect(codeBlock.text()).not.toContain('"name": "GPT-5.4 Nano"')
   })
 
+
+  it('renders optional proxy environment variables for common shells', () => {
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKey: 'sk-test',
+        baseUrl: 'https://example.com/v1',
+        platform: 'openai'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    const codeBlocks = wrapper.findAll('pre code').map((code) => code.text())
+    const proxyBlock = codeBlocks.find((content) => content.includes('HTTP_PROXY'))
+
+    expect(proxyBlock).toBeDefined()
+    expect(proxyBlock).toContain('export HTTP_PROXY="http://127.0.0.1:你的梯子端口"')
+    expect(proxyBlock).toContain('$env:HTTP_PROXY="http://127.0.0.1:你的梯子端口"')
+    expect(proxyBlock).toContain('set HTTP_PROXY=http://127.0.0.1:你的梯子端口')
+  })
   it('renders Claude Fable 5 OpenCode config with adaptive thinking', async () => {
     const wrapper = mount(UseKeyModal, {
       props: {

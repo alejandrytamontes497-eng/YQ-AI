@@ -397,42 +397,68 @@ const currentFiles = computed((): FileConfig[] => {
   if (activeClientTab.value === 'opencode') {
     switch (props.platform) {
       case 'anthropic':
-        return [generateOpenCodeConfig('anthropic', apiBase, apiKey)]
+        return withProxyEnvFile([generateOpenCodeConfig('anthropic', apiBase, apiKey)])
       case 'openai':
-        return [generateOpenCodeConfig('openai', apiBase, apiKey)]
+        return withProxyEnvFile([generateOpenCodeConfig('openai', apiBase, apiKey)])
       case 'gemini':
-        return [generateOpenCodeConfig('gemini', geminiBase, apiKey)]
+        return withProxyEnvFile([generateOpenCodeConfig('gemini', geminiBase, apiKey)])
       case 'antigravity':
-        return [
+        return withProxyEnvFile([
           generateOpenCodeConfig('antigravity-claude', antigravityBase, apiKey, 'opencode.json (Claude)'),
           generateOpenCodeConfig('antigravity-gemini', antigravityGeminiBase, apiKey, 'opencode.json (Gemini)')
-        ]
+        ])
       default:
-        return [generateOpenCodeConfig('openai', apiBase, apiKey)]
+        return withProxyEnvFile([generateOpenCodeConfig('openai', apiBase, apiKey)])
     }
   }
 
   switch (props.platform) {
     case 'openai':
       if (activeClientTab.value === 'claude') {
-        return generateAnthropicFiles(baseUrl, apiKey)
+        return withProxyEnvFile(generateAnthropicFiles(baseUrl, apiKey))
       }
       if (activeClientTab.value === 'codex-ws') {
-        return generateOpenAIWsFiles(baseUrl, apiKey)
+        return withProxyEnvFile(generateOpenAIWsFiles(baseUrl, apiKey))
       }
-      return generateOpenAIFiles(baseUrl, apiKey)
+      return withProxyEnvFile(generateOpenAIFiles(baseUrl, apiKey))
     case 'gemini':
-      return [generateGeminiCliContent(baseUrl, apiKey)]
+      return withProxyEnvFile([generateGeminiCliContent(baseUrl, apiKey)])
     case 'antigravity':
       if (activeClientTab.value === 'gemini') {
-        return [generateGeminiCliContent(`${baseUrl}/antigravity`, apiKey)]
+        return withProxyEnvFile([generateGeminiCliContent(`${baseUrl}/antigravity`, apiKey)])
       }
-      return generateAnthropicFiles(`${baseUrl}/antigravity`, apiKey)
+      return withProxyEnvFile(generateAnthropicFiles(`${baseUrl}/antigravity`, apiKey))
     default:
-      return generateAnthropicFiles(baseUrl, apiKey)
+      return withProxyEnvFile(generateAnthropicFiles(baseUrl, apiKey))
   }
 })
 
+
+function withProxyEnvFile(files: FileConfig[]): FileConfig[] {
+  return [...files, generateProxyEnvFile()]
+}
+
+function generateProxyEnvFile(): FileConfig {
+  const proxy = 'http://127.0.0.1:你的梯子端口'
+  return {
+    path: '代理环境变量（可选）',
+    hint: '只有客户端访问网关需要走本机代理时才需要配置；同一个终端会话内启动的客户端会继承这些环境变量。',
+    content: `# macOS / Linux
+export HTTP_PROXY="${proxy}"
+export HTTPS_PROXY="${proxy}"
+export ALL_PROXY="${proxy}"
+
+# Windows PowerShell
+$env:HTTP_PROXY="${proxy}"
+$env:HTTPS_PROXY="${proxy}"
+$env:ALL_PROXY="${proxy}"
+
+# Windows CMD
+set HTTP_PROXY=${proxy}
+set HTTPS_PROXY=${proxy}
+set ALL_PROXY=${proxy}`
+  }
+}
 function generateAnthropicFiles(baseUrl: string, apiKey: string): FileConfig[] {
   let path: string
   let content: string

@@ -31,7 +31,7 @@ func Logger() gin.HandlerFunc {
 		latency := endTime.Sub(startTime)
 
 		method := c.Request.Method
-		statusCode := c.Writer.Status()
+		statusCode := safeWriterStatus(c.Writer)
 		clientIP := ip.GetClientIP(c)
 		protocol := c.Request.Proto
 		accountID, hasAccountID := c.Request.Context().Value(ctxkey.AccountID).(int64)

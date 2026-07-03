@@ -28,7 +28,7 @@ func Recovery() gin.HandlerFunc {
 			return
 		}
 
-		if c.Writer.Written() {
+		if safeWriterWritten(c.Writer) {
 			c.Abort()
 			return
 		}
