@@ -16,6 +16,8 @@ import (
 
 const upstreamModelsBodyLimit int64 = 8 << 20
 
+const openAIChatGPTModelsURL = "https://chatgpt.com/backend-api/models"
+
 // UpstreamModelSyncErrorKind classifies model sync failures for safe HTTP mapping.
 type UpstreamModelSyncErrorKind string
 
@@ -248,34 +250,59 @@ func (s *AccountTestService) buildAntigravityAPIKeyModelsRequest(ctx context.Con
 }
 
 func (s *AccountTestService) buildOpenAIUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {
-	if account.Type != AccountTypeAPIKey {
-		return nil, newUpstreamModelSyncUnsupportedError(
-			fmt.Sprintf("Unsupported OpenAI account type for upstream model sync: %s", account.Type), nil,
-		)
-	}
-	apiKey := strings.TrimSpace(account.GetOpenAIApiKey())
-	if apiKey == "" {
-		return nil, newUpstreamModelSyncConfigError("No OpenAI API key is available", nil)
+	if account.Type == AccountTypeAPIKey {
+		apiKey := strings.TrimSpace(account.GetOpenAIApiKey())
+		if apiKey == "" {
+			return nil, newUpstreamModelSyncConfigError("No OpenAI API key is available", nil)
+		}
+
+		baseURL := account.GetOpenAIBaseURL()
+		if strings.TrimSpace(baseURL) == "" {
+			baseURL = "https://api.openai.com"
+		}
+		normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
+		if err != nil {
+			return nil, newUpstreamModelSyncConfigError("Invalid OpenAI base URL", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, buildOpenAIModelsURL(normalizedBaseURL), nil)
+		if err != nil {
+			return nil, newUpstreamModelSyncConfigError("Invalid OpenAI model list URL", err)
+		}
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		return req, nil
 	}
 
-	baseURL := account.GetOpenAIBaseURL()
-	if strings.TrimSpace(baseURL) == "" {
-		baseURL = "https://api.openai.com"
-	}
-	normalizedBaseURL, err := s.validateUpstreamBaseURL(baseURL)
-	if err != nil {
-		return nil, newUpstreamModelSyncConfigError("Invalid OpenAI base URL", err)
+	if account.IsOpenAIOAuth() {
+		accessToken := strings.TrimSpace(account.GetOpenAIAccessToken())
+		if accessToken == "" && s.openAITokenProvider != nil {
+			token, tokenErr := s.openAITokenProvider.GetAccessToken(ctx, account)
+			if tokenErr != nil {
+				return nil, newUpstreamModelSyncUpstreamError("Failed to get OpenAI access token", tokenErr)
+			}
+			accessToken = strings.TrimSpace(token)
+		}
+		if accessToken == "" {
+			return nil, newUpstreamModelSyncConfigError("No OpenAI access token is available", nil)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIChatGPTModelsURL, nil)
+		if err != nil {
+			return nil, newUpstreamModelSyncConfigError("Invalid OpenAI model list URL", err)
+		}
+		req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+		req.Host = "chatgpt.com"
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		setOpenAIChatGPTAccountHeaders(req.Header, account)
+		return req, nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, buildOpenAIModelsURL(normalizedBaseURL), nil)
-	if err != nil {
-		return nil, newUpstreamModelSyncConfigError("Invalid OpenAI model list URL", err)
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	return req, nil
+	return nil, newUpstreamModelSyncUnsupportedError(
+		fmt.Sprintf("Unsupported OpenAI account type for upstream model sync: %s", account.Type), nil,
+	)
 }
-
 func (s *AccountTestService) buildGeminiUpstreamModelsRequest(ctx context.Context, account *Account) (*http.Request, error) {
 	baseURL := account.GetGeminiBaseURL(geminicli.AIStudioBaseURL)
 	if strings.TrimSpace(baseURL) == "" {
@@ -405,8 +432,10 @@ func buildGeminiModelsURL(base string) string {
 }
 
 type upstreamModelEntry struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Slug  string `json:"slug"`
+	Model string `json:"model"`
 }
 
 func extractUpstreamModelIDs(body []byte) ([]string, error) {
@@ -415,42 +444,80 @@ func extractUpstreamModelIDs(body []byte) ([]string, error) {
 		Models []upstreamModelEntry `json:"models"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
+		models := append(extractUpstreamModelMapIDs(body, "data"), extractUpstreamModelMapIDs(body, "models")...)
+		if len(models) > 0 {
+			return dedupeAndSortModelIDs(models), nil
+		}
+
 		var arrayResponse []upstreamModelEntry
 		if arrayErr := json.Unmarshal(body, &arrayResponse); arrayErr != nil {
 			return nil, fmt.Errorf("parse upstream model list: %w", err)
 		}
 
-		models := make([]string, 0, len(arrayResponse))
+		models = make([]string, 0, len(arrayResponse))
 		for _, entry := range arrayResponse {
-			models = append(models, upstreamModelEntryID(entry))
+			models = append(models, upstreamModelEntryID(entry, ""))
 		}
 		return dedupeAndSortModelIDs(models), nil
 	}
 
 	models := make([]string, 0, len(response.Data)+len(response.Models))
 	for _, entry := range response.Data {
-		models = append(models, upstreamModelEntryID(entry))
+		models = append(models, upstreamModelEntryID(entry, ""))
 	}
 	for _, entry := range response.Models {
-		models = append(models, upstreamModelEntryID(entry))
+		models = append(models, upstreamModelEntryID(entry, ""))
 	}
 
 	if len(models) == 0 {
 		var arrayResponse []upstreamModelEntry
 		if err := json.Unmarshal(body, &arrayResponse); err == nil {
 			for _, entry := range arrayResponse {
-				models = append(models, upstreamModelEntryID(entry))
+				models = append(models, upstreamModelEntryID(entry, ""))
 			}
 		}
+	}
+	if len(models) == 0 {
+		models = append(models, extractUpstreamModelMapIDs(body, "data")...)
+		models = append(models, extractUpstreamModelMapIDs(body, "models")...)
 	}
 
 	return dedupeAndSortModelIDs(models), nil
 }
 
-func upstreamModelEntryID(entry upstreamModelEntry) string {
+func extractUpstreamModelMapIDs(body []byte, field string) []string {
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil
+	}
+	raw, ok := response[field]
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	var modelMap map[string]upstreamModelEntry
+	if err := json.Unmarshal(raw, &modelMap); err != nil {
+		return nil
+	}
+	models := make([]string, 0, len(modelMap))
+	for key, entry := range modelMap {
+		models = append(models, upstreamModelEntryID(entry, key))
+	}
+	return models
+}
+
+func upstreamModelEntryID(entry upstreamModelEntry, fallback string) string {
 	modelID := strings.TrimSpace(entry.ID)
 	if modelID == "" {
 		modelID = strings.TrimSpace(entry.Name)
+	}
+	if modelID == "" {
+		modelID = strings.TrimSpace(entry.Slug)
+	}
+	if modelID == "" {
+		modelID = strings.TrimSpace(entry.Model)
+	}
+	if modelID == "" {
+		modelID = strings.TrimSpace(fallback)
 	}
 	return strings.TrimPrefix(modelID, "models/")
 }

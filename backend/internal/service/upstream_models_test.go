@@ -224,3 +224,51 @@ func TestFetchUpstreamSupportedModelsDoesNotExposeUpstreamBody(t *testing.T) {
 	require.NotContains(t, syncErr.SafeMessage(), "SECRET_TOKEN")
 	require.Contains(t, syncErr.SafeMessage(), "HTTP 502")
 }
+
+func TestBuildAnthropicUpstreamModelsRequestSupportsSetupToken(t *testing.T) {
+	t.Parallel()
+
+	svc := &AccountTestService{cfg: upstreamModelSyncTestConfig()}
+	req, err := svc.buildAnthropicUpstreamModelsRequest(context.Background(), &Account{
+		Platform: PlatformAnthropic,
+		Type:     AccountTypeSetupToken,
+		Credentials: map[string]any{
+			"access_token": "claude-setup-token",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "https://api.anthropic.com/v1/models", req.URL.String())
+	require.Equal(t, "Bearer claude-setup-token", req.Header.Get("Authorization"))
+	require.Equal(t, "2023-06-01", req.Header.Get("anthropic-version"))
+}
+
+func TestBuildOpenAIUpstreamModelsRequestSupportsOAuth(t *testing.T) {
+	t.Parallel()
+
+	svc := &AccountTestService{cfg: upstreamModelSyncTestConfig()}
+	req, err := svc.buildOpenAIUpstreamModelsRequest(context.Background(), &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token":       "openai-oauth-token",
+			"chatgpt_account_id": "chatgpt-acc",
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, openAIChatGPTModelsURL, req.URL.String())
+	require.Equal(t, "chatgpt.com", req.Host)
+	require.Equal(t, "Bearer openai-oauth-token", req.Header.Get("Authorization"))
+	require.Equal(t, "chatgpt-acc", req.Header.Get("chatgpt-account-id"))
+}
+
+func TestExtractUpstreamModelIDsParsesSlugAndModelMap(t *testing.T) {
+	t.Parallel()
+
+	models, err := extractUpstreamModelIDs([]byte(`{"models":[{"slug":"gpt-5.4"},{"model":"codex-auto-review"}]}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{"codex-auto-review", "gpt-5.4"}, models)
+
+	models, err = extractUpstreamModelIDs([]byte(`{"models":{"gpt-5.5":{},"codex-auto-review":{"slug":"codex-auto-review"}}}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{"codex-auto-review", "gpt-5.5"}, models)
+}
