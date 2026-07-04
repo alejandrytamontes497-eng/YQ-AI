@@ -456,7 +456,17 @@ $env:ALL_PROXY="${proxy}"
 # Windows CMD
 set HTTP_PROXY=${proxy}
 set HTTPS_PROXY=${proxy}
-set ALL_PROXY=${proxy}`
+set ALL_PROXY=${proxy}
+
+# 删除旧的 ANTHROPIC_API_KEY，避免覆盖本页面配置的 ANTHROPIC_AUTH_TOKEN
+# macOS / Linux
+unset ANTHROPIC_API_KEY
+
+# Windows PowerShell
+Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+
+# Windows CMD
+set ANTHROPIC_API_KEY=`
   }
 }
 function generateAnthropicFiles(baseUrl: string, apiKey: string): FileConfig[] {

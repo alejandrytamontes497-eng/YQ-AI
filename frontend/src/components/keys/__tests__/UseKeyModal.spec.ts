@@ -151,6 +151,9 @@ describe('UseKeyModal', () => {
     expect(proxyBlock).toContain('export HTTP_PROXY="http://127.0.0.1:你的梯子端口"')
     expect(proxyBlock).toContain('$env:HTTP_PROXY="http://127.0.0.1:你的梯子端口"')
     expect(proxyBlock).toContain('set HTTP_PROXY=http://127.0.0.1:你的梯子端口')
+    expect(proxyBlock).toContain('unset ANTHROPIC_API_KEY')
+    expect(proxyBlock).toContain('Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue')
+    expect(proxyBlock).toContain('set ANTHROPIC_API_KEY=')
   })
   it('renders Claude Fable 5 OpenCode config with adaptive thinking', async () => {
     const wrapper = mount(UseKeyModal, {
