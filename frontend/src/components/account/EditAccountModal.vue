@@ -26,6 +26,18 @@
         <p class="input-hint">{{ t('admin.accounts.notesHint') }}</p>
       </div>
 
+      <div>
+        <label class="input-label">{{ t('admin.accounts.fallbackModel') }}</label>
+        <Select
+          v-model="fallbackModel"
+          :options="fallbackModelOptions"
+          :placeholder="t('admin.accounts.noFallbackModel')"
+          searchable
+          clearable
+        />
+        <p class="input-hint">{{ t('admin.accounts.fallbackModelHint') }}</p>
+      </div>
+
       <!-- API Key fields (only for apikey type) -->
       <div v-if="account.type === 'apikey'" class="space-y-4">
         <div>
@@ -2431,6 +2443,7 @@ import {
 } from '@/utils/openaiWsMode'
 import {
   getPresetMappingsByPlatform,
+  getModelsByPlatform,
   commonErrorCodes,
   buildModelMappingObject,
   splitModelMappingObject,
@@ -2500,6 +2513,10 @@ const modelMappings = ref<ModelMapping[]>([])
 const openAICompactModelMappings = ref<ModelMapping[]>([])
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
+const fallbackModel = ref<string | null>(null)
+const fallbackModelOptions = computed(() =>
+  getModelsByPlatform(props.account?.platform || 'anthropic').map((model) => ({ value: model, label: model }))
+)
 const DEFAULT_POOL_MODE_RETRY_COUNT = 3
 const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
@@ -2927,8 +2944,22 @@ const loadModelRestrictionFromMapping = (rawMapping?: Record<string, unknown>) =
       : 'whitelist'
 }
 
+const loadFallbackModel = (credentials?: Record<string, unknown>) => {
+  const value = credentials?.fallback_model
+  fallbackModel.value = typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
 const buildModelRestrictionMapping = () =>
   buildModelMappingObject('combined', allowedModels.value, modelMappings.value)
+
+const applyFallbackModel = (credentials: Record<string, unknown>) => {
+  const model = typeof fallbackModel.value === 'string' ? fallbackModel.value.trim() : ''
+  if (model) {
+    credentials.fallback_model = model
+  } else {
+    delete credentials.fallback_model
+  }
+}
 
 const syncFormFromAccount = (newAccount: Account | null) => {
   if (!newAccount) {
@@ -2954,6 +2985,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
   // Load intercept warmup requests setting (applies to all account types)
   const credentials = newAccount.credentials as Record<string, unknown> | undefined
+  loadFallbackModel(credentials)
   interceptWarmupRequests.value = credentials?.intercept_warmup_requests === true
   autoPauseOnExpired.value = newAccount.auto_pause_on_expired === true
   editVertexProjectId.value = ''
@@ -4233,6 +4265,11 @@ const handleSubmit = async () => {
       writeQuotaNotifyToExtra(newExtra, 'update')
       updatePayload.extra = newExtra
     }
+
+    const credentialsForFallback = (updatePayload.credentials as Record<string, unknown>) ||
+      { ...((props.account.credentials as Record<string, unknown>) || {}) }
+    applyFallbackModel(credentialsForFallback)
+    updatePayload.credentials = credentialsForFallback
 
     const canContinue = await ensureAntigravityMixedChannelConfirmed(async () => {
       await submitUpdateAccount(accountID, updatePayload)

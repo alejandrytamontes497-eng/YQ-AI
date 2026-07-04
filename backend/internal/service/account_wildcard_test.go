@@ -206,6 +206,17 @@ func TestAccountIsModelSupported(t *testing.T) {
 			requestedModel: "gemini-3-flash",
 			expected:       false,
 		},
+		{
+			name: "fallback model supports mapping miss",
+			credentials: map[string]any{
+				"fallback_model": "claude-sonnet-4-5",
+				"model_mapping": map[string]any{
+					"claude-*": "claude-sonnet-4-5",
+				},
+			},
+			requestedModel: "gemini-3-flash",
+			expected:       true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -304,6 +315,25 @@ func TestAccountGetMappedModel(t *testing.T) {
 			requestedModel: "claude-sonnet-4-5",
 			expected:       "claude-sonnet-4-5",
 		},
+		{
+			name: "no match uses fallback model",
+			credentials: map[string]any{
+				"fallback_model": "gpt-5.4",
+				"model_mapping": map[string]any{
+					"gemini-*": "gemini-mapped",
+				},
+			},
+			requestedModel: "claude-sonnet-4-5",
+			expected:       "gpt-5.4",
+		},
+		{
+			name: "fallback model works without mapping",
+			credentials: map[string]any{
+				"fallback_model": "gpt-5.4",
+			},
+			requestedModel: "unknown-model",
+			expected:       "gpt-5.4",
+		},
 	}
 
 	for _, tt := range tests {
@@ -393,6 +423,18 @@ func TestAccountResolveMappedModel(t *testing.T) {
 			requestedModel: "gpt-5.4",
 			expectedModel:  "gpt-5.4",
 			expectedMatch:  false,
+		},
+		{
+			name: "fallback model reports matched after mapping miss",
+			credentials: map[string]any{
+				"fallback_model": "gpt-5.4",
+				"model_mapping": map[string]any{
+					"gpt-5.2": "gpt-5.2",
+				},
+			},
+			requestedModel: "unknown-model",
+			expectedModel:  "gpt-5.4",
+			expectedMatch:  true,
 		},
 	}
 

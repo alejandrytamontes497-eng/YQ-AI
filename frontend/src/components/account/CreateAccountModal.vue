@@ -163,6 +163,18 @@
         </div>
       </div>
 
+      <div>
+        <label class="input-label">{{ t('admin.accounts.fallbackModel') }}</label>
+        <Select
+          v-model="fallbackModel"
+          :options="fallbackModelOptions"
+          :placeholder="t('admin.accounts.noFallbackModel')"
+          searchable
+          clearable
+        />
+        <p class="input-hint">{{ t('admin.accounts.fallbackModelHint') }}</p>
+      </div>
+
       <!-- Account Type Selection (Anthropic) -->
       <div v-if="form.platform === 'anthropic'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
@@ -1297,6 +1309,7 @@
                 </button>
               </div>
             </div>
+
           </template>
         </div>
 
@@ -3461,6 +3474,7 @@ const modelMappings = ref<ModelMapping[]>([])
 const openAICompactModelMappings = ref<ModelMapping[]>([])
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
+const fallbackModel = ref<string | null>(null)
 const DEFAULT_POOL_MODE_RETRY_COUNT = 3
 const MAX_POOL_MODE_RETRY_COUNT = 10
 const DEFAULT_POOL_MODE_RETRY_STATUS_CODES = [401, 403, 429]
@@ -3620,6 +3634,15 @@ function buildAntigravityExtra(): Record<string, unknown> | undefined {
 const buildOpenAICompactModelMapping = () =>
   buildModelMappingObject('mapping', [], openAICompactModelMappings.value)
 
+const applyFallbackModel = (credentials: Record<string, unknown>) => {
+  const model = typeof fallbackModel.value === 'string' ? fallbackModel.value.trim() : ''
+  if (model) {
+    credentials.fallback_model = model
+  } else {
+    delete credentials.fallback_model
+  }
+}
+
 const showMixedChannelWarning = ref(false)
 const mixedChannelWarningDetails = ref<{ groupName: string; currentPlatform: string; otherPlatform: string } | null>(
   null
@@ -3773,6 +3796,10 @@ const form = reactive({
   expires_at: null as number | null
 })
 
+const fallbackModelOptions = computed(() =>
+  getModelsByPlatform(form.platform).map((model) => ({ value: model, label: model }))
+)
+
 // Helper to check if current type needs OAuth flow
 const isOAuthFlow = computed(() => {
   // Antigravity upstream 类型不需要 OAuth 流程
@@ -3872,6 +3899,9 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    if (fallbackModel.value && !getModelsByPlatform(newPlatform).includes(fallbackModel.value)) {
+      fallbackModel.value = null
+    }
     // Reset base URL based on platform
     apiKeyBaseUrl.value =
       (newPlatform === 'openai')
@@ -4264,6 +4294,9 @@ const ensureAntigravityMixedChannelConfirmed = async (onConfirm: () => Promise<v
 const submitCreateAccount = async (payload: CreateAccountRequest) => {
   submitting.value = true
   try {
+    if (payload.credentials) {
+      applyFallbackModel(payload.credentials as Record<string, unknown>)
+    }
     await adminAPI.accounts.create(withAntigravityConfirmFlag(payload))
     appStore.showSuccess(t('admin.accounts.accountCreated'))
     emit('created')
@@ -4316,6 +4349,7 @@ const resetForm = () => {
   modelMappings.value = []
   openAICompactModelMappings.value = []
   modelRestrictionMode.value = 'whitelist'
+  fallbackModel.value = null
   allowedModels.value = [...claudeModels] // Default fill related models
 
   antigravityModelRestrictionMode.value = 'mapping'
@@ -4937,6 +4971,7 @@ const handleGrokValidateRT = async (refreshTokenInput: string) => {
         if (modelMapping) {
           credentials.model_mapping = modelMapping
         }
+        applyFallbackModel(credentials)
         if (!applyTempUnschedConfig(credentials)) {
           return
         }
@@ -5033,6 +5068,7 @@ const handleOpenAIExchange = async (authCode: string) => {
     if (!applyTempUnschedConfig(credentials)) {
       return
     }
+    applyFallbackModel(credentials)
 
     if (shouldCreateOpenAI) {
       await adminAPI.accounts.create({
@@ -5282,6 +5318,7 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
             credentials.compact_model_mapping = compactModelMapping
           }
         }
+        applyFallbackModel(credentials)
 
         // Generate account name; fallback to email if name is empty (ent schema requires NotEmpty)
         const baseName = form.name || tokenInfo.email || 'OpenAI OAuth Account'
@@ -5382,6 +5419,7 @@ const handleAntigravityValidateRT = async (refreshTokenInput: string) => {
 
         const credentials = antigravityOAuth.buildCredentials(tokenInfo)
         applyAntigravityProjectID(credentials, antigravityProjectId.value, 'create')
+        applyFallbackModel(credentials)
         
         // Generate account name with index for batch
         const accountName = refreshTokens.length > 1 ? `${form.name} #${i + 1}` : form.name
@@ -5634,6 +5672,7 @@ const handleAnthropicExchange = async (authCode: string) => {
 
     const credentials: Record<string, unknown> = { ...tokenInfo }
     applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+    applyFallbackModel(credentials)
     await createAccountAndFinish(form.platform, addMethod.value as AccountType, credentials, extra)
   } catch (error: any) {
     oauth.error.value = error.response?.data?.detail || t('admin.accounts.oauth.authFailed')
@@ -5761,6 +5800,7 @@ const handleCookieAuth = async (sessionKey: string) => {
 
         const credentials: Record<string, unknown> = { ...tokenInfo }
         applyInterceptWarmup(credentials, interceptWarmupRequests.value, 'create')
+        applyFallbackModel(credentials)
         if (tempUnschedEnabled.value) {
           credentials.temp_unschedulable_enabled = true
           credentials.temp_unschedulable_rules = tempUnschedPayload

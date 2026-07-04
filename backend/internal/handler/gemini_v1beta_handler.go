@@ -183,6 +183,16 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		googleError(c, http.StatusBadRequest, "Request body is empty")
 		return
 	}
+	if resolution := h.gatewayService.ResolveSimilarOrFallbackModel(c.Request.Context(), apiKey.GroupID, service.PlatformGemini, modelName); resolution.Changed {
+		originalModel := modelName
+		modelName = resolution.Model
+		reqLog.Info("gemini.model_fallback_applied",
+			zap.String("requested_model", originalModel),
+			zap.String("resolved_model", modelName),
+			zap.String("reason", resolution.Reason),
+		)
+		reqLog = reqLog.With(zap.String("resolved_model", modelName), zap.String("model_fallback_reason", resolution.Reason))
+	}
 
 	setOpsRequestContext(c, modelName, stream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(stream, false)))

@@ -81,6 +81,17 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+	if resolution := h.gatewayService.ResolveSimilarOrFallbackModel(c.Request.Context(), apiKey.GroupID, service.PlatformOpenAI, reqModel); resolution.Changed {
+		originalModel := reqModel
+		body = h.gatewayService.ReplaceModelInBody(body, resolution.Model)
+		reqModel = resolution.Model
+		reqLog.Info("openai_chat_completions.model_fallback_applied",
+			zap.String("requested_model", originalModel),
+			zap.String("resolved_model", reqModel),
+			zap.String("reason", resolution.Reason),
+		)
+		reqLog = reqLog.With(zap.String("resolved_model", reqModel), zap.String("model_fallback_reason", resolution.Reason))
+	}
 
 	setOpsRequestContext(c, reqModel, reqStream)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))

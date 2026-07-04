@@ -667,7 +667,10 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 		return true
 	}
 	normalized := normalizeRequestedModelForLookup(a.Platform, requestedModel)
-	return normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized)
+	if normalized != requestedModel && mappingSupportsRequestedModel(mapping, normalized) {
+		return true
+	}
+	return a.GetFallbackModel() != ""
 }
 
 // GetMappedModel 获取映射后的模型名（支持通配符，最长优先匹配）
@@ -682,6 +685,9 @@ func (a *Account) GetMappedModel(requestedModel string) string {
 func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string, matched bool) {
 	mapping := a.GetModelMapping()
 	if len(mapping) == 0 {
+		if fallbackModel := a.GetFallbackModel(); fallbackModel != "" {
+			return fallbackModel, true
+		}
 		return requestedModel, false
 	}
 	if mappedModel, matched := resolveRequestedModelInMapping(mapping, requestedModel); matched {
@@ -693,7 +699,17 @@ func (a *Account) ResolveMappedModel(requestedModel string) (mappedModel string,
 			return mappedModel, true
 		}
 	}
+	if fallbackModel := a.GetFallbackModel(); fallbackModel != "" {
+		return fallbackModel, true
+	}
 	return requestedModel, false
+}
+
+func (a *Account) GetFallbackModel() string {
+	if a == nil || a.Credentials == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.GetCredential("fallback_model"))
 }
 
 // GetOpenAICompactMode returns the compact routing mode for an OpenAI account.

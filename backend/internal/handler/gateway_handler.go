@@ -169,6 +169,21 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	reqModel := parsedReq.Model
 	reqStream := parsedReq.Stream
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+	if resolution := h.gatewayService.ResolveSimilarOrFallbackModel(c.Request.Context(), apiKey.GroupID, service.PlatformAnthropic, reqModel); resolution.Changed {
+		originalModel := reqModel
+		body = h.gatewayService.ReplaceModelInBody(body, resolution.Model)
+		if err := parsedReq.ReplaceBody(body); err != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "Failed to rewrite request model")
+			return
+		}
+		reqModel = resolution.Model
+		reqLog.Info("gateway.model_fallback_applied",
+			zap.String("requested_model", originalModel),
+			zap.String("resolved_model", reqModel),
+			zap.String("reason", resolution.Reason),
+		)
+		reqLog = reqLog.With(zap.String("resolved_model", reqModel), zap.String("model_fallback_reason", resolution.Reason))
+	}
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
