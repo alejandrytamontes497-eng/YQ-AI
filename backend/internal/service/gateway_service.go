@@ -1222,6 +1222,29 @@ func sanitizeAnthropicSamplingParamsForModel(body []byte, modelID string) ([]byt
 	}
 	return out, true
 }
+func sanitizeAnthropicThinkingEffort(body []byte) ([]byte, bool) {
+	if len(body) == 0 {
+		return body, false
+	}
+	effort := gjson.GetBytes(body, "output_config.effort")
+	if !effort.Exists() || effort.Type != gjson.String {
+		return body, false
+	}
+
+	raw := strings.TrimSpace(effort.String())
+	normalized := strings.ToLower(strings.ReplaceAll(raw, "-", ""))
+	switch normalized {
+	case "low", "medium", "high", "max":
+		if raw == normalized {
+			return body, false
+		}
+		return setJSONValueBytes(body, "output_config.effort", normalized)
+	case "xhigh", "extrahigh":
+		return setJSONValueBytes(body, "output_config.effort", "max")
+	default:
+		return deleteJSONPathBytes(body, "output_config.effort")
+	}
+}
 
 func normalizeClaudeOAuthSystemBody(body []byte, opts claudeOAuthNormalizeOptions) ([]byte, bool) {
 	sys := gjson.GetBytes(body, "system")
@@ -5876,6 +5899,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	if sanitized, changed := sanitizeAnthropicSamplingParamsForModel(body, gjson.GetBytes(body, "model").String()); changed {
 		body = sanitized
 	}
+	if sanitized, changed := sanitizeAnthropicThinkingEffort(body); changed {
+		body = sanitized
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -6827,6 +6853,9 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	if sanitized, changed := sanitizeAnthropicSamplingParamsForModel(body, modelID); changed {
 		body = sanitized
 	}
+	if sanitized, changed := sanitizeAnthropicThinkingEffort(body); changed {
+		body = sanitized
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -6997,6 +7026,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicVertex(
 		vertexBody = sanitized
 	}
 	if sanitized, changed := sanitizeAnthropicSamplingParamsForModel(vertexBody, modelID); changed {
+		vertexBody = sanitized
+	}
+	if sanitized, changed := sanitizeAnthropicThinkingEffort(vertexBody); changed {
 		vertexBody = sanitized
 	}
 	fullURL, err := buildVertexAnthropicURL(account.VertexProjectID(), account.VertexLocation(modelID), modelID, reqStream)
@@ -10289,6 +10321,9 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, clientBeta); changed {
 		body = sanitized
 	}
+	if sanitized, changed := sanitizeAnthropicThinkingEffort(body); changed {
+		body = sanitized
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -10390,6 +10425,9 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// 能力维度 body sanitize：与最终 anthropic-beta header 对称
 	if sanitized, changed := sanitizeAnthropicBodyForBetaTokens(body, finalBetaHeader); changed {
+		body = sanitized
+	}
+	if sanitized, changed := sanitizeAnthropicThinkingEffort(body); changed {
 		body = sanitized
 	}
 
