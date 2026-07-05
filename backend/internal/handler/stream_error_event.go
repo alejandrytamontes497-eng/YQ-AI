@@ -58,6 +58,17 @@ func writeResponsesFailedSSE(c *gin.Context, errType, message string) bool {
 		return false
 	}
 
+	header := c.Writer.Header()
+	if header.Get("Content-Type") == "" {
+		header.Set("Content-Type", "text/event-stream; charset=utf-8")
+	}
+	if header.Get("Cache-Control") == "" {
+		header.Set("Cache-Control", "no-cache")
+	}
+	if header.Get("X-Accel-Buffering") == "" {
+		header.Set("X-Accel-Buffering", "no")
+	}
+
 	payload, err := json.Marshal(responsesFailedEvent{
 		Type: "response.failed",
 		Response: responsesFailedBody{
@@ -113,6 +124,20 @@ func inboundIsResponses(c *gin.Context) bool {
 		return false
 	}
 	return strings.HasSuffix(p, "/responses") || strings.Contains(p, "/responses/")
+}
+
+// requestWantsStream reports whether the original client request asked for a
+// streaming response. Handlers set this after parsing the request body, before
+// account selection or upstream forwarding can fail.
+func requestWantsStream(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if v, ok := c.Get(opsStreamKey); ok {
+		stream, _ := v.(bool)
+		return stream
+	}
+	return false
 }
 
 // synthesizeResponseID 为合成的 response.failed 事件生成一个稳定的 id。

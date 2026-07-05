@@ -1888,16 +1888,14 @@ func (h *OpenAIGatewayHandler) mapUpstreamError(statusCode int) (int, string, st
 
 // handleStreamingAwareError handles errors that may occur after streaming has started
 func (h *OpenAIGatewayHandler) handleStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
-	if streamStarted {
-		// /v1/responses 的严格 SDK（Codex CLI）要求终止事件必须属于
-		// response.completed/failed/incomplete/cancelled 集合。
-		// 通用 `event: error` 帧不被识别为终止事件，会导致
-		// "stream closed before response.completed"。
-		if inboundIsResponses(c) {
-			if writeResponsesFailedSSE(c, errType, message) {
-				return
-			}
+	// Strict Responses clients expect a protocol terminal event, even when the
+	// upstream fails before the first SSE frame is written.
+	if inboundIsResponses(c) && (streamStarted || requestWantsStream(c)) {
+		if writeResponsesFailedSSE(c, errType, message) {
+			return
 		}
+	}
+	if streamStarted {
 		// Stream already started, send error as SSE event then close
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {

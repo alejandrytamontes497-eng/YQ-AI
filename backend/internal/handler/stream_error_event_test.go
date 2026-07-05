@@ -89,6 +89,20 @@ func TestOpenAIHandleStreamingAwareError_ResponsesStreamingIncludesModel(t *test
 	assert.Equal(t, "gpt-5.5", resp["model"])
 }
 
+func TestOpenAIHandleStreamingAwareError_ResponsesStreamBeforeFirstEventEmitsResponseFailed(t *testing.T) {
+	c, w := newGinContextForEndpoint(t, EndpointResponses)
+	setOpsRequestContext(c, "gpt-5.5", true)
+
+	h := &OpenAIGatewayHandler{}
+	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "boom", false)
+
+	resp, errObj := parseResponsesFailedSSE(t, w.Body.String())
+	assert.Equal(t, "gpt-5.5", resp["model"])
+	assert.Equal(t, "upstream_error", errObj["code"])
+	assert.Equal(t, "boom", errObj["message"])
+	assert.Contains(t, w.Header().Get("Content-Type"), "text/event-stream")
+}
+
 // 没有 model 时 model 字段不应出现（避免发空字符串污染下游解析）。
 func TestOpenAIHandleStreamingAwareError_ResponsesStreamingOmitsEmptyModel(t *testing.T) {
 	c, w := newGinContextForEndpoint(t, EndpointResponses)
@@ -162,6 +176,19 @@ func TestGatewayHandleStreamingAwareError_ResponsesStreamingEmitsResponseFailed(
 	_, errObj := parseResponsesFailedSSE(t, w.Body.String())
 	assert.Equal(t, "upstream_error", errObj["code"])
 	assert.Equal(t, "upstream gone", errObj["message"])
+}
+
+func TestGatewayHandleStreamingAwareError_ResponsesStreamBeforeFirstEventEmitsResponseFailed(t *testing.T) {
+	c, w := newGinContextForEndpoint(t, EndpointResponses)
+	setOpsRequestContext(c, "gpt-5.5", true)
+	h := &GatewayHandler{}
+	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "upstream gone", false)
+
+	resp, errObj := parseResponsesFailedSSE(t, w.Body.String())
+	assert.Equal(t, "gpt-5.5", resp["model"])
+	assert.Equal(t, "upstream_error", errObj["code"])
+	assert.Equal(t, "upstream gone", errObj["message"])
+	assert.Contains(t, w.Header().Get("Content-Type"), "text/event-stream")
 }
 
 // Gateway handler: /v1/messages preserves the legacy data:{type:error,...} format
