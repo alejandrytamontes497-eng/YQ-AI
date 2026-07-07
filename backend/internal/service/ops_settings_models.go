@@ -115,6 +115,7 @@ type OpsDataRetentionSettings struct {
 	CleanupEnabled             bool   `json:"cleanup_enabled"`
 	CleanupSchedule            string `json:"cleanup_schedule"`
 	ErrorLogRetentionDays      int    `json:"error_log_retention_days"`
+	SystemLogRetentionDays     int    `json:"system_log_retention_days"`
 	MinuteMetricsRetentionDays int    `json:"minute_metrics_retention_days"`
 	HourlyMetricsRetentionDays int    `json:"hourly_metrics_retention_days"`
 }

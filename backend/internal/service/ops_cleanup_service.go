@@ -165,9 +165,10 @@ func (s *OpsCleanupService) applyScheduleLocked(ctx context.Context) error {
 	c.Start()
 	s.cron = c
 	logger.LegacyPrintf("service.ops_cleanup",
-		"[OpsCleanup] scheduled (schedule=%q tz=%s retention_days=err:%d/min:%d/hour:%d)",
+		"[OpsCleanup] scheduled (schedule=%q tz=%s retention_days=err:%d/system:%d/min:%d/hour:%d)",
 		schedule, loc.String(),
 		s.effective.ErrorLogRetentionDays,
+		s.effective.SystemLogRetentionDays,
 		s.effective.MinuteMetricsRetentionDays,
 		s.effective.HourlyMetricsRetentionDays,
 	)
@@ -219,8 +220,8 @@ func (s *OpsCleanupService) computeEffectiveLocked(ctx context.Context) {
 		}
 		return
 	}
-	var adv OpsAdvancedSettings
-	if err := json.Unmarshal([]byte(raw), &adv); err != nil {
+	adv := defaultOpsAdvancedSettings()
+	if err := json.Unmarshal([]byte(raw), adv); err != nil {
 		logger.LegacyPrintf("service.ops_cleanup",
 			"[OpsCleanup] parse advanced settings failed, using cfg: %v", err)
 		return
@@ -232,6 +233,9 @@ func (s *OpsCleanupService) computeEffectiveLocked(ctx context.Context) {
 	}
 	if dr.ErrorLogRetentionDays >= 0 {
 		base.ErrorLogRetentionDays = dr.ErrorLogRetentionDays
+	}
+	if dr.SystemLogRetentionDays >= 0 {
+		base.SystemLogRetentionDays = dr.SystemLogRetentionDays
 	}
 	if dr.MinuteMetricsRetentionDays >= 0 {
 		base.MinuteMetricsRetentionDays = dr.MinuteMetricsRetentionDays
@@ -300,8 +304,8 @@ func (s *OpsCleanupService) runCleanupOnce(ctx context.Context) (opsCleanupDelet
 	targets := []opsCleanupTarget{
 		{effective.ErrorLogRetentionDays, "ops_error_logs", "created_at", false, &out.errorLogs},
 		{effective.ErrorLogRetentionDays, "ops_alert_events", "created_at", false, &out.alertEvents},
-		{effective.ErrorLogRetentionDays, "ops_system_logs", "created_at", false, &out.systemLogs},
-		{effective.ErrorLogRetentionDays, "ops_system_log_cleanup_audits", "created_at", false, &out.logAudits},
+		{effective.SystemLogRetentionDays, "ops_system_logs", "created_at", false, &out.systemLogs},
+		{effective.SystemLogRetentionDays, "ops_system_log_cleanup_audits", "created_at", false, &out.logAudits},
 		{effective.MinuteMetricsRetentionDays, "ops_system_metrics", "created_at", false, &out.systemMetrics},
 		{effective.HourlyMetricsRetentionDays, "ops_metrics_hourly", "bucket_start", false, &out.hourlyPreagg},
 		{effective.HourlyMetricsRetentionDays, "ops_metrics_daily", "bucket_date", true, &out.dailyPreagg},

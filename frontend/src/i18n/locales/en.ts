@@ -5420,6 +5420,7 @@ export default {
         cleanupSchedule: 'Cleanup Schedule (Cron)',
         cleanupScheduleHint: 'Example: 0 2 * * * means 2 AM daily',
         errorLogRetentionDays: 'Error Log Retention Days',
+        systemLogRetentionDays: 'System Log Retention Days',
         minuteMetricsRetentionDays: 'Minute Metrics Retention Days',
         hourlyMetricsRetentionDays: 'Hourly Metrics Retention Days',
         retentionDaysHint: 'Recommended 7-90 days; longer periods consume more storage. Set to 0 to wipe all history on every scheduled cleanup',

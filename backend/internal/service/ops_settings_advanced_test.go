@@ -23,6 +23,9 @@ func TestGetOpsAdvancedSettings_DefaultHidesOpenAITokenStats(t *testing.T) {
 	if !cfg.DisplayAlertEvents {
 		t.Fatalf("DisplayAlertEvents = false, want true by default")
 	}
+	if cfg.DataRetention.SystemLogRetentionDays != 3 {
+		t.Fatalf("SystemLogRetentionDays = %d, want 3 by default", cfg.DataRetention.SystemLogRetentionDays)
+	}
 	if repo.setCalls != 1 {
 		t.Fatalf("expected defaults to be persisted once, got %d", repo.setCalls)
 	}
@@ -96,6 +99,9 @@ func TestGetOpsAdvancedSettings_BackfillsNewDisplayFlagsFromDefaults(t *testing.
 	}
 	if !cfg.DisplayAlertEvents {
 		t.Fatalf("DisplayAlertEvents = false, want true default backfill")
+	}
+	if cfg.DataRetention.SystemLogRetentionDays != 3 {
+		t.Fatalf("SystemLogRetentionDays = %d, want 3 default backfill", cfg.DataRetention.SystemLogRetentionDays)
 	}
 }
 

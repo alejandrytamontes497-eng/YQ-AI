@@ -363,6 +363,7 @@ func defaultOpsAdvancedSettings() *OpsAdvancedSettings {
 			CleanupEnabled:             false,
 			CleanupSchedule:            opsCleanupDefaultSchedule,
 			ErrorLogRetentionDays:      30,
+			SystemLogRetentionDays:     3,
 			MinuteMetricsRetentionDays: 30,
 			HourlyMetricsRetentionDays: 30,
 		},
@@ -396,6 +397,9 @@ func normalizeOpsAdvancedSettings(cfg *OpsAdvancedSettings) {
 	if cfg.DataRetention.ErrorLogRetentionDays < 0 {
 		cfg.DataRetention.ErrorLogRetentionDays = 30
 	}
+	if cfg.DataRetention.SystemLogRetentionDays < 0 {
+		cfg.DataRetention.SystemLogRetentionDays = 3
+	}
 	if cfg.DataRetention.MinuteMetricsRetentionDays < 0 {
 		cfg.DataRetention.MinuteMetricsRetentionDays = 30
 	}
@@ -425,6 +429,9 @@ func validateOpsAdvancedSettings(cfg *OpsAdvancedSettings) error {
 	// 保留天数：0 表示每次清理全部，1-365 表示按天数保留。
 	if cfg.DataRetention.ErrorLogRetentionDays < 0 || cfg.DataRetention.ErrorLogRetentionDays > 365 {
 		return errors.New("error_log_retention_days must be between 0 and 365")
+	}
+	if cfg.DataRetention.SystemLogRetentionDays < 0 || cfg.DataRetention.SystemLogRetentionDays > 365 {
+		return errors.New("system_log_retention_days must be between 0 and 365")
 	}
 	if cfg.DataRetention.MinuteMetricsRetentionDays < 0 || cfg.DataRetention.MinuteMetricsRetentionDays > 365 {
 		return errors.New("minute_metrics_retention_days must be between 0 and 365")

@@ -2,9 +2,22 @@ import { apiClient } from './client'
 
 export type ChatRole = 'system' | 'user' | 'assistant'
 
+export type ChatContentPart =
+  | {
+      type: 'text'
+      text: string
+    }
+  | {
+      type: 'image_url'
+      image_url: {
+        url: string
+        detail?: 'auto' | 'low' | 'high'
+      }
+    }
+
 export interface ChatMessage {
   role: ChatRole
-  content: string
+  content: string | ChatContentPart[]
 }
 
 export interface ChatCompletionRequest {
@@ -172,7 +185,8 @@ export async function createChatCompletion(request: ChatCompletionRequest): Prom
 
 function readStreamDelta(body: any): string {
   const choice = body?.choices?.[0]
-  return choice?.delta?.content || choice?.message?.content || ''
+  const content = choice?.delta?.content || choice?.message?.content || ''
+  return typeof content === 'string' ? content : ''
 }
 
 function readStreamUsage(body: any): ChatCompletionUsage | null {

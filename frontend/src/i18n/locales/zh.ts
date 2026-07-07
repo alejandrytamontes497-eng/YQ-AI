@@ -5579,6 +5579,7 @@ export default {
         cleanupSchedule: '清理计划（Cron）',
         cleanupScheduleHint: '例如：0 2 * * * 表示每天凌晨2点',
         errorLogRetentionDays: '错误日志保留天数',
+        systemLogRetentionDays: '系统日志保留天数',
         minuteMetricsRetentionDays: '分钟指标保留天数',
         hourlyMetricsRetentionDays: '小时指标保留天数',
         retentionDaysHint: '建议保留 7-90 天，过长会占用存储空间；填 0 表示每次定时清理时清空所有历史',

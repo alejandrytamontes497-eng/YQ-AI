@@ -141,7 +141,7 @@
             </div>
             <div class="message-bubble" :class="message.role === 'user' ? 'message-bubble-user' : 'message-bubble-assistant'">
               <button
-                v-if="message.content"
+                v-if="messageText(message)"
                 class="message-copy-button"
                 type="button"
                 :title="copiedTarget === `${message.id}:full` ? '已复制' : '复制全文'"
@@ -149,7 +149,16 @@
               >
                 <Icon :name="copiedTarget === `${message.id}:full` ? 'check' : 'copy'" size="xs" :stroke-width="2" />
               </button>
-              <div v-if="message.content" class="message-rendered-content">
+              <div v-if="messageImages(message).length > 0" class="message-image-grid">
+                <img
+                  v-for="image in messageImages(message)"
+                  :key="image.id"
+                  :src="image.url"
+                  :alt="image.name"
+                  class="message-image"
+                />
+              </div>
+              <div v-if="messageText(message)" class="message-rendered-content">
                 <template v-for="part in messagePartsForMessage(message)" :key="part.id">
                   <div v-if="part.type === 'text'" class="message-text whitespace-pre-wrap break-words">
                     <template v-for="inline in inlinePartsForText(part.content, part.id)" :key="inline.id">
@@ -174,7 +183,9 @@
                   </div>
                 </template>
               </div>
-              <div class="message-content whitespace-pre-wrap break-words">{{ message.content || '正在生成回复...' }}</div>
+              <div v-if="messageText(message) || message.role === 'assistant'" class="message-content whitespace-pre-wrap break-words">
+                {{ messageText(message) || '正在生成回复...' }}
+              </div>
               <div v-if="copySegmentsForMessage(message).length > 0" class="message-segment-actions">
                 <button
                   v-for="segment in copySegmentsForMessage(message)"
@@ -199,7 +210,26 @@
         </div>
 
         <form class="chat-composer" @submit.prevent="sendMessage">
+          <div v-if="selectedImages.length > 0" class="composer-attachments">
+            <div v-for="image in selectedImages" :key="image.id" class="composer-attachment">
+              <img :src="image.url" :alt="image.name" />
+              <button type="button" title="移除图片" @click="removeSelectedImage(image.id)">
+                <Icon name="x" size="xs" :stroke-width="2" />
+              </button>
+            </div>
+          </div>
           <div class="composer-inner">
+            <label class="upload-button" title="上传图片">
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                class="hidden"
+                :disabled="sending"
+                @change="handleImageUpload"
+              />
+              <Icon name="upload" size="md" :stroke-width="2" />
+            </label>
             <textarea
               v-model="draft"
               :disabled="sending"
@@ -228,12 +258,20 @@ import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Input from '@/components/common/Input.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { keysAPI } from '@/api/keys'
-import { chatAPI, type ChatCompletionUsage, type ChatMessage, type UserChatModel } from '@/api/chat'
+import { chatAPI, type ChatCompletionUsage, type ChatContentPart, type ChatMessage, type UserChatModel } from '@/api/chat'
 import { useAuthStore } from '@/stores/auth'
 import type { ApiKey } from '@/types'
 
 interface UiMessage extends ChatMessage {
   id: string
+}
+
+interface ChatImageAttachment {
+  id: string
+  name: string
+  type: string
+  size: number
+  url: string
 }
 
 interface Conversation {
@@ -284,6 +322,8 @@ interface PersistedChatState {
 const MAX_CONVERSATIONS = 100
 const MAX_LOCAL_MESSAGES = 100
 const MAX_CONTEXT_MESSAGES = 10
+const MAX_IMAGE_ATTACHMENTS = 4
+const MAX_IMAGE_SIZE = 8 * 1024 * 1024
 const CHAT_HISTORY_STORAGE_PREFIX = 'chat_history_v1'
 const CHAT_SIDEBAR_COLLAPSED_KEY = 'chat_sidebar_collapsed'
 const STREAM_RENDER_MAX_CHARS_PER_FRAME = 160
@@ -302,6 +342,7 @@ const conversations = ref<Conversation[]>([createConversation('新对话')])
 const activeConversationId = ref(conversations.value[0].id)
 const conversationSearch = ref('')
 const draft = ref('')
+const selectedImages = ref<ChatImageAttachment[]>([])
 const loading = ref(false)
 const sending = ref(false)
 const errorMessage = ref('')
@@ -343,7 +384,12 @@ const selectedModelName = computed(() => selectedModelOption.value?.model ?? '')
 const selectedKey = computed(() => selectKeyForModel(selectedModelOption.value))
 
 const canSend = computed(() =>
-  Boolean(selectedKey.value?.key && hasExactKeyForModel(selectedModelOption.value) && draft.value.trim() && !sending.value)
+  Boolean(
+    selectedKey.value?.key &&
+    hasExactKeyForModel(selectedModelOption.value) &&
+    (draft.value.trim() || selectedImages.value.length > 0) &&
+    !sending.value
+  )
 )
 
 function createConversation(title: string): Conversation {
@@ -398,13 +444,13 @@ function sanitizeConversation(conversation: Partial<Conversation> | null | undef
         .filter((message): message is UiMessage =>
           message &&
           (message.role === 'system' || message.role === 'user' || message.role === 'assistant') &&
-          typeof message.content === 'string'
+          isValidChatContent(message.content)
         )
         .slice(-MAX_LOCAL_MESSAGES)
         .map((message) => ({
           id: typeof message.id === 'string' && message.id ? message.id : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
           role: message.role,
-          content: message.content
+          content: sanitizeChatContent(message.content)
         }))
     : []
 
@@ -494,6 +540,7 @@ function startNewChat() {
   trimConversations()
   activeConversationId.value = conversation.id
   draft.value = ''
+  selectedImages.value = []
   errorMessage.value = ''
   lastUsage.value = null
   persistChatHistory()
@@ -501,6 +548,7 @@ function startNewChat() {
 
 function selectConversation(id: string) {
   activeConversationId.value = id
+  selectedImages.value = []
   errorMessage.value = ''
   persistChatHistory()
   void nextTick(scrollToBottom)
@@ -538,6 +586,7 @@ function resetActiveConversation() {
   activeConversation.value.preview = ''
   activeConversation.value.updatedAt = formatTime(new Date())
   errorMessage.value = ''
+  selectedImages.value = []
   lastUsage.value = null
   persistChatHistory()
 }
@@ -547,8 +596,9 @@ function useStarterPrompt(prompt: string) {
 }
 
 async function copyMessageContent(message: UiMessage) {
-  if (!message.content) return
-  await copyText(message.content, `${message.id}:full`)
+  const content = messageText(message)
+  if (!content) return
+  await copyText(content, `${message.id}:full`)
 }
 
 async function copySegment(segment: CopySegment) {
@@ -595,14 +645,42 @@ function showCopied(target: string) {
 }
 
 function copySegmentsForMessage(message: UiMessage): CopySegment[] {
-  return extractCopySegments(message.content).map((segment, index) => ({
+  return extractCopySegments(messageText(message)).map((segment, index) => ({
     ...segment,
     id: `${message.id}:segment:${index}`
   }))
 }
 
 function messagePartsForMessage(message: UiMessage): MessagePart[] {
-  return parseMessageParts(message.content, message.id)
+  return parseMessageParts(messageText(message), message.id)
+}
+
+function messageText(message: ChatMessage): string {
+  if (typeof message.content === 'string') return message.content
+  return message.content
+    .filter((part): part is Extract<ChatContentPart, { type: 'text' }> => part.type === 'text')
+    .map((part) => part.text)
+    .join('\n')
+}
+
+function messageImages(message: ChatMessage): ChatImageAttachment[] {
+  if (typeof message.content === 'string') return []
+  return message.content
+    .filter((part): part is Extract<ChatContentPart, { type: 'image_url' }> => part.type === 'image_url')
+    .map((part, index) => ({
+      id: `${index}:${part.image_url.url.slice(0, 32)}`,
+      name: `图片 ${index + 1}`,
+      type: dataURLMimeType(part.image_url.url) || 'image/*',
+      size: 0,
+      url: part.image_url.url
+    }))
+}
+
+function messagePreview(message: ChatMessage): string {
+  const text = messageText(message).trim()
+  if (text) return text
+  const imageCount = messageImages(message).length
+  return imageCount > 0 ? `发送了 ${imageCount} 张图片` : ''
 }
 
 function inlinePartsForText(content: string, parentID: string): InlineMessagePart[] {
@@ -763,6 +841,136 @@ function looksLikeStandaloneCode(text: string): boolean {
   return codeLineCount >= Math.min(3, lines.length)
 }
 
+function isValidChatContent(content: unknown): content is ChatMessage['content'] {
+  if (typeof content === 'string') return true
+  if (!Array.isArray(content)) return false
+  return content.every((part) => {
+    if (!part || typeof part !== 'object') return false
+    const item = part as Record<string, unknown>
+    if (item.type === 'text') return typeof item.text === 'string'
+    if (item.type === 'image_url') {
+      const imageURL = item.image_url as Record<string, unknown> | undefined
+      return typeof imageURL?.url === 'string' && imageURL.url.startsWith('data:image/')
+    }
+    return false
+  })
+}
+
+function sanitizeChatContent(content: ChatMessage['content']): ChatMessage['content'] {
+  if (typeof content === 'string') return content
+  return content
+    .filter((part) => {
+      if (part.type === 'text') return part.text.trim()
+      return part.image_url.url.startsWith('data:image/')
+    })
+    .map((part) => {
+      if (part.type === 'text') {
+        return { type: 'text', text: part.text }
+      }
+      return {
+        type: 'image_url',
+        image_url: {
+          url: part.image_url.url,
+          detail: part.image_url.detail ?? 'auto'
+        }
+      }
+    })
+}
+
+function buildUserMessageContent(text: string, images: ChatImageAttachment[]): ChatMessage['content'] {
+  if (images.length === 0) return text
+
+  const parts: ChatContentPart[] = []
+  if (text) {
+    parts.push({ type: 'text', text })
+  }
+  images.forEach((image) => {
+    parts.push({
+      type: 'image_url',
+      image_url: {
+        url: image.url,
+        detail: 'auto'
+      }
+    })
+  })
+  return parts
+}
+
+function dataURLMimeType(url: string): string {
+  return /^data:([^;,]+)[;,]/.exec(url)?.[1] ?? ''
+}
+
+function formatFileSize(size: number): string {
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`
+  return `${Math.max(1, Math.round(size / 1024))} KB`
+}
+
+function readImageFile(file: File): Promise<ChatImageAttachment> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const url = typeof reader.result === 'string' ? reader.result : ''
+      if (!url.startsWith('data:image/')) {
+        reject(new Error('图片读取失败，请重新选择。'))
+        return
+      }
+      resolve({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        name: file.name,
+        type: file.type || dataURLMimeType(url) || 'image/*',
+        size: file.size,
+        url
+      })
+    }
+    reader.onerror = () => reject(new Error('图片读取失败，请重新选择。'))
+    reader.readAsDataURL(file)
+  })
+}
+
+async function handleImageUpload(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  if (files.length === 0) return
+
+  errorMessage.value = ''
+  const availableSlots = MAX_IMAGE_ATTACHMENTS - selectedImages.value.length
+  if (availableSlots <= 0) {
+    errorMessage.value = `最多只能同时上传 ${MAX_IMAGE_ATTACHMENTS} 张图片。`
+    return
+  }
+
+  const accepted = files.slice(0, availableSlots)
+  if (files.length > availableSlots) {
+    errorMessage.value = `最多只能同时上传 ${MAX_IMAGE_ATTACHMENTS} 张图片，已忽略多余图片。`
+  }
+
+  const nextImages: ChatImageAttachment[] = []
+  for (const file of accepted) {
+    if (!file.type.startsWith('image/')) {
+      errorMessage.value = '请选择图片文件。'
+      continue
+    }
+    if (file.size > MAX_IMAGE_SIZE) {
+      errorMessage.value = `图片 ${file.name} 超过 ${formatFileSize(MAX_IMAGE_SIZE)}，请压缩后再上传。`
+      continue
+    }
+    try {
+      nextImages.push(await readImageFile(file))
+    } catch (error) {
+      errorMessage.value = error instanceof Error ? error.message : '图片读取失败，请重新选择。'
+    }
+  }
+
+  if (nextImages.length > 0) {
+    selectedImages.value = [...selectedImages.value, ...nextImages]
+  }
+}
+
+function removeSelectedImage(id: string) {
+  selectedImages.value = selectedImages.value.filter((image) => image.id !== id)
+}
+
 function toGatewayMessages(): ChatMessage[] {
   return messages.value
     .slice(-MAX_CONTEXT_MESSAGES)
@@ -772,7 +980,7 @@ function toGatewayMessages(): ChatMessage[] {
     }))
 }
 
-function addMessage(role: ChatMessage['role'], content: string) {
+function addMessage(role: ChatMessage['role'], content: ChatMessage['content']) {
   if (!activeConversation.value) return null
 
   const message: UiMessage = {
@@ -782,7 +990,7 @@ function addMessage(role: ChatMessage['role'], content: string) {
   }
   activeConversation.value.messages.push(message)
   trimActiveConversationMessages()
-  touchConversation(content, role)
+  touchConversation(messagePreview(message), role)
   return message
 }
 
@@ -835,9 +1043,9 @@ function flushStreamDelta(options: { all?: boolean } = {}) {
   const take = options.all
     ? streamDeltaBuffer.length
     : Math.min(streamDeltaBuffer.length, streamFrameSize(streamDeltaBuffer.length))
-  streamAssistantMessage.content += streamDeltaBuffer.slice(0, take)
+  streamAssistantMessage.content = messageText(streamAssistantMessage) + streamDeltaBuffer.slice(0, take)
   streamDeltaBuffer = streamDeltaBuffer.slice(take)
-  touchConversation(streamAssistantMessage.content, 'assistant', { persist: false })
+  touchConversation(messageText(streamAssistantMessage), 'assistant', { persist: false })
   queueScrollToBottom()
 
   if (streamDeltaBuffer) {
@@ -898,10 +1106,12 @@ async function sendMessage() {
   }
 
   const content = draft.value.trim()
+  const images = selectedImages.value.slice()
   draft.value = ''
+  selectedImages.value = []
   errorMessage.value = ''
   lastUsage.value = null
-  addMessage('user', content)
+  addMessage('user', buildUserMessageContent(content, images))
   const requestMessages = toGatewayMessages()
   const assistantMessage = addMessage('assistant', '')
   await scrollToBottom()
@@ -927,22 +1137,22 @@ async function sendMessage() {
     })
 
     await waitForStreamDrain()
-    if (!assistantMessage.content.trim()) {
+    if (!messageText(assistantMessage).trim()) {
       assistantMessage.content = '模型没有返回可显示的内容。'
     }
-    touchConversation(assistantMessage.content, 'assistant')
+    touchConversation(messageText(assistantMessage), 'assistant')
     lastUsage.value = usage ?? lastUsage.value
     await refreshSelectedKey()
   } catch (error) {
     flushStreamDeltaNow()
     const message = error instanceof Error ? error.message : '发送失败，请稍后重试。'
-    if (assistantMessage.content.trim()) {
-      touchConversation(assistantMessage.content, 'assistant')
+    if (messageText(assistantMessage).trim()) {
+      touchConversation(messageText(assistantMessage), 'assistant')
       return
     }
     errorMessage.value = message
     assistantMessage.content = `请求失败：${message}`
-    touchConversation(assistantMessage.content, 'assistant')
+    touchConversation(messageText(assistantMessage), 'assistant')
   } finally {
     sending.value = false
     abortController = null
@@ -1273,6 +1483,14 @@ onBeforeUnmount(() => {
   @apply pr-8;
 }
 
+.message-image-grid {
+  @apply mb-3 grid max-w-md grid-cols-2 gap-2;
+}
+
+.message-image {
+  @apply h-36 w-full rounded-lg border border-white/20 object-cover shadow-sm dark:border-dark-600;
+}
+
 .message-rendered-content {
   @apply space-y-3 pr-8;
 }
@@ -1326,8 +1544,32 @@ onBeforeUnmount(() => {
   @apply border-t border-gray-200 px-5 py-4 dark:border-dark-700;
 }
 
+.composer-attachments {
+  @apply mx-auto mb-3 flex max-w-5xl flex-wrap gap-2;
+}
+
+.composer-attachment {
+  @apply relative h-20 w-20 overflow-hidden rounded-lg border border-gray-200 bg-gray-50 dark:border-dark-700 dark:bg-dark-800;
+}
+
+.composer-attachment img {
+  @apply h-full w-full object-cover;
+}
+
+.composer-attachment button {
+  @apply absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/60 text-white transition hover:bg-black/75;
+}
+
 .composer-inner {
   @apply mx-auto flex max-w-5xl items-end gap-3 rounded-2xl border border-gray-200 bg-white p-3 shadow-lg shadow-gray-900/5 dark:border-dark-700 dark:bg-dark-800;
+}
+
+.upload-button {
+  @apply flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-xl text-gray-500 transition hover:bg-gray-100 hover:text-primary-700 dark:text-gray-300 dark:hover:bg-dark-700 dark:hover:text-primary-300;
+}
+
+.upload-button:has(input:disabled) {
+  @apply cursor-not-allowed opacity-50;
 }
 
 .composer-inner textarea {
