@@ -494,6 +494,14 @@ func (s *EmailService) TestSMTPConnectionWithConfig(config *SMTPConfig) error {
 	}
 	defer func() { _ = client.Close() }()
 
+	// Keep SMTP connection tests consistent with SendEmailWithConfig:
+	// port 587 starts plain and then upgrades via STARTTLS before AUTH.
+	if ok, _ := client.Extension("STARTTLS"); ok {
+		if err = client.StartTLS(&tls.Config{ServerName: config.Host, MinVersion: tls.VersionTLS12}); err != nil {
+			return fmt.Errorf("starttls failed: %w", err)
+		}
+	}
+
 	auth := smtp.PlainAuth("", config.Username, config.Password, config.Host)
 	if err = client.Auth(auth); err != nil {
 		return fmt.Errorf("smtp authentication failed: %w", err)
