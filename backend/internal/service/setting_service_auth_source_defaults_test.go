@@ -136,3 +136,18 @@ func TestSettingService_UpdateAuthSourceDefaultSettings_PersistsAllKeys(t *testi
 	require.NoError(t, json.Unmarshal([]byte(repo.updates[SettingKeyAuthSourceDefaultWeChatSubscriptions]), &got))
 	require.Equal(t, []DefaultSubscriptionSetting{{GroupID: 24, ValidityDays: 90}}, got)
 }
+
+func TestSettingService_UpdateSettingsWithAuthSourceDefaults_EmailVerifyForcesThirdPartyEmail(t *testing.T) {
+	repo := &authSourceDefaultsRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+
+	err := svc.UpdateSettingsWithAuthSourceDefaults(
+		context.Background(),
+		&SystemSettings{EmailVerifyEnabled: true},
+		&AuthSourceDefaultSettings{ForceEmailOnThirdPartySignup: false},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, "true", repo.updates[SettingKeyEmailVerifyEnabled])
+	require.Equal(t, "true", repo.updates[SettingKeyForceEmailOnThirdPartySignup])
+}

@@ -2014,6 +2014,10 @@ func (s *SettingService) UpdateSettingsWithAuthSourceDefaults(ctx context.Contex
 		return err
 	}
 
+	if settings != nil && settings.EmailVerifyEnabled && authDefaults != nil {
+		authDefaults.ForceEmailOnThirdPartySignup = true
+	}
+
 	authSourceUpdates, err := s.buildAuthSourceDefaultUpdates(ctx, authDefaults)
 	if err != nil {
 		return err
