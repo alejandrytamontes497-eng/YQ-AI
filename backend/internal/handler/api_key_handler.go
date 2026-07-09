@@ -301,6 +301,12 @@ func (h *APIKeyHandler) GetUserGroupRates(c *gin.Context) {
 		return
 	}
 
+	role, _ := middleware2.GetUserRoleFromContext(c)
+	if role != service.RoleAdmin {
+		response.Success(c, map[int64]float64{})
+		return
+	}
+
 	rates, err := h.apiKeyService.GetUserGroupRates(c.Request.Context(), subject.UserID)
 	if err != nil {
 		response.ErrorFrom(c, err)

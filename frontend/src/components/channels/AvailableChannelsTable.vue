@@ -25,8 +25,7 @@
           </td>
         </tr>
       </tbody>
-      <!-- 每个渠道一个 tbody：首行 td rowspan 渠道名，后续行只渲染其余三列。
-           tbody 之间强分隔线表达"渠道边界"，tbody 内部用淡分隔线区分平台。 -->
+      <!-- Render one tbody per channel so rowspans keep channel metadata aligned. -->
       <tbody
         v-else
         v-for="(channel, chIdx) in rows"
@@ -39,7 +38,7 @@
           class="transition-colors hover:bg-gray-50/40 dark:hover:bg-dark-800/40"
           :class="{ 'border-t border-gray-100/70 dark:border-dark-700/50': secIdx > 0 }"
         >
-          <!-- 渠道名：只在第一行渲染并用 rowspan 纵向合并 -->
+          <!-- Channel name spans platform rows. -->
           <td
             v-if="secIdx === 0"
             :rowspan="channel.platforms.length"
@@ -48,7 +47,7 @@
             {{ channel.name }}
           </td>
 
-          <!-- 描述：独立一列，同样用 rowspan 纵向合并 -->
+          <!-- Description spans platform rows. -->
           <td
             v-if="secIdx === 0"
             :rowspan="channel.platforms.length"
@@ -58,7 +57,7 @@
             <span v-else class="text-gray-400">-</span>
           </td>
 
-          <!-- 平台徽章 -->
+          <!-- Platform badge. -->
           <td class="align-top px-4 py-3">
             <span
               :class="[
@@ -71,7 +70,7 @@
             </span>
           </td>
 
-          <!-- 分组：专属分组在前（紫色 shield 行），公开分组在后（灰色 globe 行）。 -->
+          <!-- Exclusive groups are listed before public groups. -->
           <td class="align-top px-4 py-3">
             <div class="flex flex-col gap-1.5">
               <div
@@ -92,7 +91,6 @@
                   :platform="g.platform as GroupPlatform"
                   :subscription-type="(g.subscription_type || 'standard') as SubscriptionType"
                   :rate-multiplier="g.rate_multiplier"
-                  :user-rate-multiplier="userGroupRates[g.id] ?? null"
                   always-show-rate
                 />
               </div>
@@ -114,7 +112,6 @@
                   :platform="g.platform as GroupPlatform"
                   :subscription-type="(g.subscription_type || 'standard') as SubscriptionType"
                   :rate-multiplier="g.rate_multiplier"
-                  :user-rate-multiplier="userGroupRates[g.id] ?? null"
                   always-show-rate
                 />
               </div>
@@ -122,7 +119,7 @@
             </div>
           </td>
 
-          <!-- 支持模型 -->
+          <!-- Supported models. -->
           <td class="align-top px-4 py-3">
             <div class="flex flex-wrap gap-1">
               <SupportedModelChip
@@ -155,7 +152,7 @@ import type { UserAvailableChannel, UserAvailableGroup, UserChannelPlatformSecti
 import type { GroupPlatform, SubscriptionType } from '@/types'
 import { platformBadgeClass } from '@/utils/platformColors'
 
-const props = defineProps<{
+defineProps<{
   columns: {
     name: string
     description: string
@@ -169,13 +166,7 @@ const props = defineProps<{
   noPricingLabel: string
   noModelsLabel: string
   emptyLabel: string
-  /** 用户专属倍率（group_id → multiplier）；无专属时由 GroupBadge 仅显示默认倍率。 */
-  userGroupRates: Record<number, number>
 }>()
-
-// Suppress unused warning — props is accessed via template automatically but
-// the explicit reference here keeps the linter from flagging userGroupRates.
-void props.userGroupRates
 
 const { t } = useI18n()
 
