@@ -30,6 +30,7 @@ const messages: Record<string, string> = {
   'admin.usage.billingModeImage': 'Image',
   'admin.usage.group': 'Group',
   'admin.usage.allGroups': 'All Groups',
+  'common.query': 'Query',
   'common.refresh': 'Refresh',
   'common.reset': 'Reset',
   'admin.usage.cleanup.button': 'Cleanup',
@@ -162,6 +163,28 @@ describe('UsageFilters — user search dropdown', () => {
     // Also confirm user_id was set by checking the emitted change came through
     // (the component uses toRef so modelValue is mutated in place and 'change' is emitted)
     expect(wrapper.props('modelValue').user_id).toBe(1)
+  })
+})
+
+describe('UsageFilters actions', () => {
+  it('emits query when the query button is clicked', async () => {
+    const wrapper = mount(UsageFilters, {
+      props: {
+        modelValue: defaultFilters(),
+        exporting: false,
+        startDate: '2026-05-01',
+        endDate: '2026-05-28',
+        showActions: true,
+        modelOptions: [],
+      },
+      global: { stubs: { Select: true, Teleport: true } },
+    })
+
+    const queryButton = wrapper.findAll('button').find((button) => button.text() === 'Query')
+    expect(queryButton).toBeDefined()
+    await queryButton!.trigger('click')
+
+    expect(wrapper.emitted('query')).toHaveLength(1)
   })
 })
 

@@ -149,6 +149,9 @@
 
       <!-- Right: actions -->
       <div v-if="showActions" class="flex w-full flex-wrap items-center justify-end gap-3 sm:w-auto">
+        <button type="button" @click="$emit('query')" class="btn btn-primary">
+          {{ t('common.query') }}
+        </button>
         <button type="button" @click="$emit('refresh')" class="btn btn-secondary">
           {{ t('common.refresh') }}
         </button>
@@ -191,6 +194,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits([
   'update:modelValue',
   'change',
+  'query',
   'refresh',
   'reset',
   'export',

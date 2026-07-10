@@ -3,9 +3,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -17,6 +19,35 @@ type gatewayModelsAccountRepoStub struct {
 	service.AccountRepository
 
 	byGroup map[int64][]service.Account
+}
+
+type gatewayModelsCacheStub struct {
+	accountID int64
+	setID     int64
+	setTTL    time.Duration
+	deleted   bool
+}
+
+func (s *gatewayModelsCacheStub) GetSessionAccountID(context.Context, int64, string) (int64, error) {
+	if s.accountID <= 0 {
+		return 0, errors.New("cache miss")
+	}
+	return s.accountID, nil
+}
+
+func (s *gatewayModelsCacheStub) SetSessionAccountID(_ context.Context, _ int64, _ string, accountID int64, ttl time.Duration) error {
+	s.setID = accountID
+	s.setTTL = ttl
+	return nil
+}
+
+func (s *gatewayModelsCacheStub) RefreshSessionTTL(context.Context, int64, string, time.Duration) error {
+	return nil
+}
+
+func (s *gatewayModelsCacheStub) DeleteSessionAccountID(context.Context, int64, string) error {
+	s.deleted = true
+	return nil
 }
 
 type gatewayModelsResponseForTest struct {
@@ -43,10 +74,14 @@ func (s *gatewayModelsAccountRepoStub) ListSchedulableByGroupID(ctx context.Cont
 }
 
 func newGatewayModelsHandlerForTest(repo service.AccountRepository) *GatewayHandler {
+	return newGatewayModelsHandlerWithCacheForTest(repo, nil)
+}
+
+func newGatewayModelsHandlerWithCacheForTest(repo service.AccountRepository, cache service.GatewayCache) *GatewayHandler {
 	return &GatewayHandler{
 		gatewayService: service.NewGatewayService(
 			repo,
-			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			nil, nil, nil, nil, nil, nil, cache, nil, nil, nil, nil, nil, nil,
 			nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		),
 	}
@@ -390,6 +425,111 @@ func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultF
 	require.NotZero(t, got.Data[0].Created)
 	require.Equal(t, "openai", got.Data[0].OwnedBy)
 	require.Empty(t, got.Data[0].CreatedAt)
+}
+
+func TestGatewayModels_PrefersMostRecentSuccessfulAPIKeyAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(30)
+	cache := &gatewayModelsCacheStub{accountID: 2}
+	h := newGatewayModelsHandlerWithCacheForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{
+						ID:       1,
+						Platform: service.PlatformAnthropic,
+						Credentials: map[string]any{"model_mapping": map[string]any{
+							"claude-account-a": "upstream-a",
+						}},
+					},
+					{
+						ID:       2,
+						Platform: service.PlatformAnthropic,
+						Credentials: map[string]any{"model_mapping": map[string]any{
+							"claude-account-b":        "upstream-b",
+							"claude-account-b-hidden": "upstream-b-hidden",
+						}},
+					},
+				},
+			},
+		},
+		cache,
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID: 99,
+		Group: &service.Group{
+			ID:       groupID,
+			Platform: service.PlatformAnthropic,
+			ModelsListConfig: service.GroupModelsListConfig{
+				Enabled: true,
+				Models:  []string{"claude-account-b"},
+			},
+		},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, []string{"claude-account-b"}, modelIDsForTest(got.Data))
+	require.False(t, cache.deleted)
+}
+
+func TestGatewayModels_StaleRecentAccountFallsBackToGroupModels(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	groupID := int64(31)
+	cache := &gatewayModelsCacheStub{accountID: 999}
+	h := newGatewayModelsHandlerWithCacheForTest(
+		&gatewayModelsAccountRepoStub{
+			byGroup: map[int64][]service.Account{
+				groupID: {
+					{
+						ID:       1,
+						Platform: service.PlatformAnthropic,
+						Credentials: map[string]any{"model_mapping": map[string]any{
+							"claude-fallback": "upstream-fallback",
+						}},
+					},
+				},
+			},
+		},
+		cache,
+	)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID:    100,
+		Group: &service.Group{ID: groupID, Platform: service.PlatformAnthropic},
+	})
+
+	h.Models(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, []string{"claude-fallback"}, modelIDsForTest(got.Data))
+	require.True(t, cache.deleted)
+}
+
+func TestGatewayModels_RemembersRecentAccountForFiveMinutes(t *testing.T) {
+	groupID := int64(32)
+	cache := &gatewayModelsCacheStub{}
+	h := newGatewayModelsHandlerWithCacheForTest(&gatewayModelsAccountRepoStub{}, cache)
+
+	require.NoError(t, h.gatewayService.RememberRecentAPIKeyAccount(
+		context.Background(), &groupID, 101, 7,
+	))
+	require.Equal(t, int64(7), cache.setID)
+	require.Equal(t, 5*time.Minute, cache.setTTL)
 }
 
 func modelIDsForTest(models []gatewayModelItemForTest) []string {

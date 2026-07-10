@@ -506,6 +506,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 
+			if err := h.gatewayService.RememberRecentAPIKeyAccount(
+				c.Request.Context(), apiKey.GroupID, apiKey.ID, account.ID,
+			); err != nil {
+				reqLog.Warn("gateway.remember_recent_api_key_account_failed",
+					zap.Int64("api_key_id", apiKey.ID),
+					zap.Int64("account_id", account.ID),
+					zap.Error(err),
+				)
+			}
+
 			// RPM 计数递增（Forward 成功后）
 			// 注意：TOCTOU 竞态是已知且可接受的设计权衡，与 WindowCost 一致的 soft-limit 模式。
 			// 在高并发下可能短暂超出 RPM 限制，但不会导致请求失败。
@@ -926,6 +936,16 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				return
 			}
 
+			if err := h.gatewayService.RememberRecentAPIKeyAccount(
+				c.Request.Context(), currentAPIKey.GroupID, currentAPIKey.ID, account.ID,
+			); err != nil {
+				reqLog.Warn("gateway.remember_recent_api_key_account_failed",
+					zap.Int64("api_key_id", currentAPIKey.ID),
+					zap.Int64("account_id", account.ID),
+					zap.Error(err),
+				)
+			}
+
 			// RPM 计数递增（Forward 成功后）
 			// 注意：TOCTOU 竞态是已知且可接受的设计权衡，与 WindowCost 一致的 soft-limit 模式。
 			// 在高并发下可能短暂超出 RPM 限制，但不会导致请求失败。
@@ -1023,8 +1043,17 @@ func (h *GatewayHandler) Models(c *gin.Context) {
 		platform = forcedPlatform
 	}
 
-	// Get available models from account configurations for the selected group platform.
-	availableModels := h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
+	// Prefer the account that most recently completed a request for this API key.
+	// Fall back to the group-wide union when the binding is missing or stale.
+	var availableModels []string
+	if apiKey != nil {
+		availableModels = h.gatewayService.GetRecentAPIKeyAccountModels(
+			c.Request.Context(), groupID, apiKey.ID, platform,
+		)
+	}
+	if len(availableModels) == 0 {
+		availableModels = h.gatewayService.GetAvailableModels(c.Request.Context(), groupID, platform)
+	}
 	if apiKey != nil && apiKey.Group != nil && apiKey.Group.CustomModelsListEnabled() {
 		availableModels = filterModelsByCustomList(availableModels, defaultModelIDsForPlatform(platform), apiKey.Group.ModelsListConfig.Models)
 		writeCustomModelsList(c, platform, availableModels)

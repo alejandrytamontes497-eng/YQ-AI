@@ -931,6 +931,15 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, true, nil)
 		}
+		if err := h.gatewayService.RememberRecentAPIKeyAccount(
+			c.Request.Context(), apiKey.GroupID, apiKey.ID, account.ID,
+		); err != nil {
+			reqLog.Warn("openai_messages.remember_recent_api_key_account_failed",
+				zap.Int64("api_key_id", apiKey.ID),
+				zap.Int64("account_id", account.ID),
+				zap.Error(err),
+			)
+		}
 
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)

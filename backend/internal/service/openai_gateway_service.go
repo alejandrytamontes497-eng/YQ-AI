@@ -1308,6 +1308,15 @@ func (s *OpenAIGatewayService) BindStickySession(ctx context.Context, groupID *i
 	return s.setStickySessionAccountID(ctx, groupID, sessionHash, accountID, ttl)
 }
 
+// RememberRecentAPIKeyAccount records the account most recently used by an
+// Anthropic Messages request routed through the OpenAI compatibility service.
+func (s *OpenAIGatewayService) RememberRecentAPIKeyAccount(ctx context.Context, groupID *int64, apiKeyID, accountID int64) error {
+	if s == nil {
+		return nil
+	}
+	return rememberRecentAPIKeyAccount(ctx, s.cache, groupID, apiKeyID, accountID)
+}
+
 // SelectAccount selects an OpenAI account with sticky session support
 func (s *OpenAIGatewayService) SelectAccount(ctx context.Context, groupID *int64, sessionHash string) (*Account, error) {
 	return s.SelectAccountForModel(ctx, groupID, sessionHash, "")

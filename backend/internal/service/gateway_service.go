@@ -72,6 +72,7 @@ IMPORTANT: You must NEVER generate or guess URLs for the user unless you are con
 
 	defaultUserGroupRateCacheTTL = 30 * time.Second
 	defaultModelsListCacheTTL    = 15 * time.Second
+	recentAPIKeyAccountTTL       = 5 * time.Minute
 	postUsageBillingTimeout      = 15 * time.Second
 	debugGatewayBodyEnv          = "SUB2API_DEBUG_GATEWAY_BODY"
 	// 上游错误体只需要提取错误 JSON/日志摘要，默认 512KiB 避免错误风暴叠加大请求体。
@@ -487,6 +488,23 @@ func resolveModelsListCacheTTL(cfg *config.Config) time.Duration {
 
 func modelsListCacheKey(groupID *int64, platform string) string {
 	return fmt.Sprintf("%d|%s", derefGroupID(groupID), strings.TrimSpace(platform))
+}
+
+func recentAPIKeyAccountCacheKey(apiKeyID int64) string {
+	return fmt.Sprintf("models:recent-api-key:%d", apiKeyID)
+}
+
+func rememberRecentAPIKeyAccount(ctx context.Context, cache GatewayCache, groupID *int64, apiKeyID, accountID int64) error {
+	if cache == nil || groupID == nil || apiKeyID <= 0 || accountID <= 0 {
+		return nil
+	}
+	return cache.SetSessionAccountID(
+		ctx,
+		*groupID,
+		recentAPIKeyAccountCacheKey(apiKeyID),
+		accountID,
+		recentAPIKeyAccountTTL,
+	)
 }
 
 func prefetchedStickyGroupIDFromContext(ctx context.Context) (int64, bool) {
@@ -10562,6 +10580,63 @@ func (s *GatewayService) validateUpstreamBaseURL(raw string) (string, error) {
 		return "", fmt.Errorf("invalid base_url: %w", err)
 	}
 	return normalized, nil
+}
+
+// RememberRecentAPIKeyAccount records the account that most recently completed
+// a request for this API key. The synthetic session key reuses the distributed
+// gateway cache so model discovery stays consistent across server instances.
+func (s *GatewayService) RememberRecentAPIKeyAccount(ctx context.Context, groupID *int64, apiKeyID, accountID int64) error {
+	if s == nil {
+		return nil
+	}
+	return rememberRecentAPIKeyAccount(ctx, s.cache, groupID, apiKeyID, accountID)
+}
+
+// GetRecentAPIKeyAccountModels returns the public model names exposed by the
+// most recently successful account. A stale or invalid binding is deleted and
+// reported as a miss so callers can fall back to the group-wide model list.
+func (s *GatewayService) GetRecentAPIKeyAccountModels(ctx context.Context, groupID *int64, apiKeyID int64, platform string) []string {
+	if s == nil || s.cache == nil || s.accountRepo == nil || groupID == nil || apiKeyID <= 0 {
+		return nil
+	}
+
+	cacheKey := recentAPIKeyAccountCacheKey(apiKeyID)
+	accountID, err := s.cache.GetSessionAccountID(ctx, *groupID, cacheKey)
+	if err != nil || accountID <= 0 {
+		return nil
+	}
+
+	accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
+	if err != nil {
+		return nil
+	}
+
+	for i := range accounts {
+		account := &accounts[i]
+		if account.ID != accountID {
+			continue
+		}
+		if !s.isAccountAllowedForPlatform(account, strings.TrimSpace(platform), true) {
+			break
+		}
+
+		mapping := account.GetModelMapping()
+		if len(mapping) == 0 {
+			return nil
+		}
+		models := make([]string, 0, len(mapping))
+		for model := range mapping {
+			model = strings.TrimSpace(model)
+			if model != "" {
+				models = append(models, model)
+			}
+		}
+		sort.Strings(models)
+		return models
+	}
+
+	_ = s.cache.DeleteSessionAccountID(ctx, *groupID, cacheKey)
+	return nil
 }
 
 // GetAvailableModels returns the list of models available for a group
