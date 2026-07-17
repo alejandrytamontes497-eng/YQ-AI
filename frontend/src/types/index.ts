@@ -567,6 +567,7 @@ export interface ApiKey {
   id: number
   user_id: number
   key: string
+  key_revealed: boolean
   name: string
   group_id: number | null
   status: 'active' | 'inactive' | 'quota_exhausted' | 'expired'

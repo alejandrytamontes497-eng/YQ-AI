@@ -67,6 +67,20 @@ func TestRedactText_DefaultPathDoesNotUseExtraCache(t *testing.T) {
 	}
 }
 
+func TestRedactText_DefaultCredentialKeys(t *testing.T) {
+	in := `{"authorization":"Bearer secret","api_key":"upstream-key","cookie":"session=secret","aws_secret_access_key":"aws-secret","private_key":"pem-secret","other":"ok"}`
+	out := RedactText(in)
+
+	for _, secret := range []string{"Bearer secret", "upstream-key", "session=secret", "aws-secret", "pem-secret"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("expected %q to be redacted, got %q", secret, out)
+		}
+	}
+	if !strings.Contains(out, `"other":"ok"`) {
+		t.Fatalf("expected non-sensitive value to remain, got %q", out)
+	}
+}
+
 func clearExtraTextPatternCache() {
 	extraTextPatternCache.Range(func(key, value any) bool {
 		extraTextPatternCache.Delete(key)

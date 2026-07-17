@@ -94,8 +94,14 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	callAuditRepository := repository.NewCallAuditRepository(db)
 	callAuditService := service.NewCallAuditService(callAuditRepository)
 	opsRepository := repository.NewOpsRepository(db)
-	schedulerCache := repository.ProvideSchedulerCache(redisClient, configConfig)
-	accountRepository := repository.NewAccountRepository(client, db, schedulerCache)
+	schedulerCache, err := repository.ProvideSchedulerCache(redisClient, configConfig, secretEncryptor)
+	if err != nil {
+		return nil, err
+	}
+	accountRepository, err := repository.NewAccountRepository(client, db, schedulerCache, secretEncryptor)
+	if err != nil {
+		return nil, err
+	}
 	concurrencyCache := repository.ProvideConcurrencyCache(redisClient, configConfig)
 	concurrencyService := service.ProvideConcurrencyService(concurrencyCache, accountRepository, configConfig)
 	usageBillingRepository := repository.NewUsageBillingRepository(client, db)

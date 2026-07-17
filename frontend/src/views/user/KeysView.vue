@@ -61,9 +61,10 @@
           <template #cell-key="{ value, row }">
             <div class="flex items-center gap-2">
               <code class="code text-xs">
-                {{ maskApiKey(value) }}
+                {{ value }}
               </code>
               <button
+                v-if="row.key_revealed"
                 @click="copyToClipboard(value, row.id)"
                 class="rounded-lg p-1 transition-colors hover:bg-gray-100 dark:hover:bg-dark-700"
                 :class="
@@ -312,6 +313,7 @@
             <div class="flex items-center gap-1">
               <!-- Use Key Button -->
               <button
+                v-if="row.key_revealed"
                 @click="openUseKeyModal(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400"
               >
@@ -320,7 +322,7 @@
               </button>
               <!-- Import to CC Switch Button -->
               <button
-                v-if="!publicSettings?.hide_ccs_import_button"
+                v-if="row.key_revealed && !publicSettings?.hide_ccs_import_button"
                 @click="importToCcswitch(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
               >
@@ -927,6 +929,35 @@
       @close="closeUseKeyModal"
     />
 
+    <BaseDialog
+      :show="createdKey !== null"
+      :title="t('keys.secretDialogTitle')"
+      width="normal"
+      @close="closeCreatedKeyDialog"
+    >
+      <div v-if="createdKey" class="space-y-4">
+        <div class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+          {{ t('keys.secretDialogWarning') }}
+        </div>
+        <div class="flex items-center gap-2 rounded-lg bg-gray-900 p-3">
+          <code class="min-w-0 flex-1 break-all font-mono text-sm text-gray-100">{{ createdKey.key }}</code>
+          <button
+            type="button"
+            class="shrink-0 rounded-md p-2 text-gray-300 transition-colors hover:bg-gray-700 hover:text-white"
+            :title="t('keys.copyToClipboard')"
+            @click="copyCreatedKey"
+          >
+            <Icon :name="createdKeyCopied ? 'check' : 'clipboard'" size="sm" />
+          </button>
+        </div>
+      </div>
+      <template #footer>
+        <button type="button" class="btn btn-primary" @click="closeCreatedKeyDialog">
+          {{ t('keys.secretDialogSaved') }}
+        </button>
+      </template>
+    </BaseDialog>
+
     <!-- CCS Client Selection Dialog for Antigravity -->
     <BaseDialog
       :show="showCcsClientSelect"
@@ -1068,7 +1099,6 @@ import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
-import { maskApiKey } from '@/utils/maskApiKey'
 import {
   buildCcSwitchImportDeeplink,
   type CcSwitchClientType
@@ -1137,6 +1167,8 @@ const showDeleteDialog = ref(false)
 const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)
 const showUseKeyModal = ref(false)
+const createdKey = ref<ApiKey | null>(null)
+const createdKeyCopied = ref(false)
 const showCcsClientSelect = ref(false)
 const pendingCcsRow = ref<ApiKey | null>(null)
 const selectedKey = ref<ApiKey | null>(null)
@@ -1190,7 +1222,7 @@ const customKeyError = computed(() => {
     return ''
   }
   const key = formData.value.custom_key
-  if (key.length < 16) {
+  if (key.length < 32) {
     return t('keys.customKeyTooShort')
   }
   // 检查字符：只允许字母、数字、下划线、连字符
@@ -1352,6 +1384,21 @@ const openUseKeyModal = (key: ApiKey) => {
 const closeUseKeyModal = () => {
   showUseKeyModal.value = false
   selectedKey.value = null
+}
+
+const copyCreatedKey = async () => {
+  if (!createdKey.value) return
+  const success = await clipboardCopy(createdKey.value.key, t('keys.copied'))
+  if (!success) return
+  createdKeyCopied.value = true
+  setTimeout(() => {
+    createdKeyCopied.value = false
+  }, 1200)
+}
+
+const closeCreatedKeyDialog = () => {
+  createdKey.value = null
+  createdKeyCopied.value = false
 }
 
 const handlePageChange = (page: number) => {
@@ -1542,7 +1589,7 @@ const handleSubmit = async () => {
       appStore.showSuccess(t('keys.keyUpdatedSuccess'))
     } else {
       const customKey = formData.value.use_custom_key ? formData.value.custom_key : undefined
-      await keysAPI.create(
+      const created = await keysAPI.create(
         formData.value.name,
         formData.value.group_id,
         customKey,
@@ -1552,6 +1599,7 @@ const handleSubmit = async () => {
         expiresInDays,
         rateLimitData
       )
+      createdKey.value = created
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
       // Only advance tour if active, on submit step, and creation succeeded
       if (onboardingStore.isCurrentStep('[data-tour="key-form-submit"]')) {

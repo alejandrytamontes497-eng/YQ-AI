@@ -13,15 +13,17 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 const (
-	dataType       = "sub2api-data"
-	legacyDataType = "sub2api-bundle"
-	dataVersion    = 1
-	dataPageCap    = 1000
+	dataType            = "sub2api-data"
+	legacyDataType      = "sub2api-bundle"
+	dataVersion         = 1
+	dataPageCap         = 1000
+	adminPasswordHeader = "X-Admin-Password"
 )
 
 type DataPayload struct {
@@ -91,6 +93,29 @@ func buildProxyKey(protocol, host string, port int, username, password string) s
 }
 
 func (h *AccountHandler) ExportData(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+
+	subject, ok := servermiddleware.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		response.Unauthorized(c, "unauthorized")
+		return
+	}
+	password := c.GetHeader(adminPasswordHeader)
+	if password == "" {
+		response.BadRequest(c, "admin password is required")
+		return
+	}
+	user, err := h.adminService.GetUser(c.Request.Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if !user.CheckPassword(password) {
+		response.BadRequest(c, "incorrect admin password")
+		return
+	}
+
 	ctx := c.Request.Context()
 
 	selectedIDs, err := parseAccountIDs(c)

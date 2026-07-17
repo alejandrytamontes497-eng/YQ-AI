@@ -45,7 +45,7 @@
               @click="$emit('pick', k)"
             >
               <td class="px-3 py-2 font-medium text-gray-900 dark:text-white">{{ k.name }}</td>
-              <td class="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{{ maskApiKey(k.key) }}</td>
+              <td class="px-3 py-2 font-mono text-xs text-gray-500 dark:text-gray-400">{{ k.key }}</td>
               <td class="px-3 py-2">
                 <GroupBadge
                   v-if="k.group"
@@ -79,7 +79,6 @@ import type { ApiKey } from '@/types'
 import type { Provider } from '@/api/admin/channelMonitor'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import GroupBadge from '@/components/common/GroupBadge.vue'
-import { maskApiKey } from '@/utils/maskApiKey'
 
 const props = withDefaults(defineProps<{
   show: boolean

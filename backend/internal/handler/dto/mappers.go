@@ -75,13 +75,27 @@ func UserFromServiceAdmin(u *service.User) *AdminUser {
 }
 
 func APIKeyFromService(k *service.APIKey) *APIKey {
+	return apiKeyFromService(k, false)
+}
+
+// APIKeyFromServiceWithSecret is only for the immediate create response.
+func APIKeyFromServiceWithSecret(k *service.APIKey) *APIKey {
+	return apiKeyFromService(k, true)
+}
+
+func apiKeyFromService(k *service.APIKey, revealSecret bool) *APIKey {
 	if k == nil {
 		return nil
+	}
+	keyValue := service.MaskAPIKeyForDisplay(k.Key)
+	if revealSecret {
+		keyValue = k.Key
 	}
 	out := &APIKey{
 		ID:            k.ID,
 		UserID:        k.UserID,
-		Key:           k.Key,
+		Key:           keyValue,
+		KeyRevealed:   revealSecret,
 		Name:          k.Name,
 		GroupID:       k.GroupID,
 		Status:        k.Status,

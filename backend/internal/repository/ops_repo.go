@@ -606,13 +606,14 @@ LIMIT 1`
 // 同一 key 可能有多条历史(反复创建/删除),取 deleted_at 最近一条(id 作同毫秒 tiebreaker)。
 // 未命中返回 (nil, nil)。
 func (r *opsRepository) LookupDeletedKeyAudit(ctx context.Context, key string) (*service.DeletedKeyAuditResult, error) {
+	lookupValues := service.APIKeyLookupValues(key)
 	var res service.DeletedKeyAuditResult
 	err := r.db.QueryRowContext(ctx, `
 		SELECT user_id, key_name
 		FROM deleted_api_key_audits
-		WHERE key = $1
+		WHERE key = $1 OR key = $2
 		ORDER BY deleted_at DESC, id DESC
-		LIMIT 1`, key).Scan(&res.UserID, &res.KeyName)
+		LIMIT 1`, lookupValues[0], lookupValues[len(lookupValues)-1]).Scan(&res.UserID, &res.KeyName)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil

@@ -2,7 +2,6 @@
 package handler
 
 import (
-	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -174,13 +173,16 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		svcReq.RateLimit7d = *req.RateLimit7d
 	}
 
-	executeUserIdempotentJSON(c, "user.api_keys.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
-		key, err := h.apiKeyService.Create(ctx, subject.UserID, svcReq)
-		if err != nil {
-			return nil, err
-		}
-		return dto.APIKeyFromService(key), nil
-	})
+	// The secret is returned once and must not be persisted in the idempotency
+	// response table or exposed again by list/detail endpoints.
+	key, err := h.apiKeyService.Create(c.Request.Context(), subject.UserID, svcReq)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	response.Success(c, dto.APIKeyFromServiceWithSecret(key))
 }
 
 // Update handles updating an API key

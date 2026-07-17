@@ -563,6 +563,7 @@ export async function syncFromCrs(params: {
 }
 
 export async function exportData(options?: {
+  adminPassword: string
   ids?: number[]
   filters?: {
     platform?: string
@@ -593,7 +594,10 @@ export async function exportData(options?: {
   if (options?.includeProxies === false) {
     params.include_proxies = 'false'
   }
-  const { data } = await apiClient.get<AdminDataPayload>('/admin/accounts/data', { params })
+  const { data } = await apiClient.get<AdminDataPayload>('/admin/accounts/data', {
+    params,
+    headers: { 'X-Admin-Password': options?.adminPassword ?? '' }
+  })
   return data
 }
 

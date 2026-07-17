@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	securitySecretKeyJWT        = "jwt_secret"
-	securitySecretReadRetryMax  = 5
-	securitySecretReadRetryWait = 10 * time.Millisecond
+	securitySecretKeyJWT            = "jwt_secret"
+	securitySecretKeyDataEncryption = "data_encryption_key"
+	securitySecretReadRetryMax      = 5
+	securitySecretReadRetryWait     = 10 * time.Millisecond
 )
 
 var readRandomBytes = rand.Read
@@ -42,17 +43,51 @@ func ensureBootstrapSecrets(ctx context.Context, client *ent.Client, cfg *config
 			log.Println("Warning: configured JWT secret mismatches persisted value; using persisted secret for cross-instance consistency.")
 		}
 		cfg.JWT.Secret = storedSecret
+	} else {
+		secret, created, err := getOrCreateGeneratedSecuritySecret(ctx, client, securitySecretKeyJWT, 32)
+		if err != nil {
+			return fmt.Errorf("ensure jwt secret: %w", err)
+		}
+		cfg.JWT.Secret = secret
+		if created {
+			log.Println("Warning: JWT secret auto-generated and persisted to database. Consider rotating to a managed secret for production.")
+		}
+	}
+
+	return ensureDataEncryptionSecret(ctx, client, cfg)
+}
+
+func ensureDataEncryptionSecret(ctx context.Context, client *ent.Client, cfg *config.Config) error {
+	configured := strings.TrimSpace(cfg.Totp.EncryptionKey)
+	if cfg.Totp.EncryptionKeyConfigured {
+		stored, err := client.SecuritySecret.Query().Where(securitysecret.KeyEQ(securitySecretKeyDataEncryption)).Only(ctx)
+		if ent.IsNotFound(err) {
+			// Keep explicitly managed keys outside the database so a database-only
+			// compromise does not disclose both ciphertext and its encryption key.
+			cfg.Totp.EncryptionKey = configured
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read persisted data encryption key: %w", err)
+		}
+		storedSecret := strings.TrimSpace(stored.Value)
+		if len([]byte(storedSecret)) < 32 {
+			return fmt.Errorf("stored secret %q must be at least 32 bytes", securitySecretKeyDataEncryption)
+		}
+		if storedSecret != configured {
+			log.Println("Warning: configured data encryption key mismatches the legacy persisted value; using the persisted key to keep encrypted data readable.")
+		}
+		cfg.Totp.EncryptionKey = storedSecret
 		return nil
 	}
 
-	secret, created, err := getOrCreateGeneratedSecuritySecret(ctx, client, securitySecretKeyJWT, 32)
+	secret, created, err := getOrCreateGeneratedSecuritySecret(ctx, client, securitySecretKeyDataEncryption, 32)
 	if err != nil {
-		return fmt.Errorf("ensure jwt secret: %w", err)
+		return fmt.Errorf("ensure data encryption key: %w", err)
 	}
-	cfg.JWT.Secret = secret
-
+	cfg.Totp.EncryptionKey = secret
 	if created {
-		log.Println("Warning: JWT secret auto-generated and persisted to database. Consider rotating to a managed secret for production.")
+		log.Println("Warning: data encryption key auto-generated and persisted to database. Configure a managed key for new production deployments.")
 	}
 	return nil
 }

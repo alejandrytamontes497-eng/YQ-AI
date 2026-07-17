@@ -7,10 +7,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	servermiddleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+const accountDataTestAdminPassword = "correct-password"
 
 type dataResponse struct {
 	Code int         `json:"code"`
@@ -46,10 +49,13 @@ type dataAccount struct {
 	Priority    int            `json:"priority"`
 }
 
-func setupAccountDataRouter() (*gin.Engine, *stubAdminService) {
+func setupAccountDataRouter(t *testing.T) (*gin.Engine, *stubAdminService) {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	adminSvc := newStubAdminService()
+	adminSvc.users[0].Role = service.RoleAdmin
+	require.NoError(t, adminSvc.users[0].SetPassword(accountDataTestAdminPassword))
 
 	h := NewAccountHandler(
 		adminSvc,
@@ -67,13 +73,17 @@ func setupAccountDataRouter() (*gin.Engine, *stubAdminService) {
 		nil,
 	)
 
+	router.Use(func(c *gin.Context) {
+		c.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: adminSvc.users[0].ID})
+		c.Next()
+	})
 	router.GET("/api/v1/admin/accounts/data", h.ExportData)
 	router.POST("/api/v1/admin/accounts/data", h.ImportData)
 	return router, adminSvc
 }
 
 func TestExportDataIncludesSecrets(t *testing.T) {
-	router, adminSvc := setupAccountDataRouter()
+	router, adminSvc := setupAccountDataRouter(t)
 
 	proxyID := int64(11)
 	adminSvc.proxies = []service.Proxy{
@@ -115,8 +125,11 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/data", nil)
+	req.Header.Set(adminPasswordHeader, accountDataTestAdminPassword)
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+	require.Equal(t, "no-cache", rec.Header().Get("Pragma"))
 
 	var resp dataResponse
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
@@ -130,7 +143,7 @@ func TestExportDataIncludesSecrets(t *testing.T) {
 }
 
 func TestExportDataWithoutProxies(t *testing.T) {
-	router, adminSvc := setupAccountDataRouter()
+	router, adminSvc := setupAccountDataRouter(t)
 
 	proxyID := int64(11)
 	adminSvc.proxies = []service.Proxy{
@@ -161,6 +174,7 @@ func TestExportDataWithoutProxies(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/data?include_proxies=false", nil)
+	req.Header.Set(adminPasswordHeader, accountDataTestAdminPassword)
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -173,7 +187,7 @@ func TestExportDataWithoutProxies(t *testing.T) {
 }
 
 func TestExportDataPassesAccountFiltersAndSort(t *testing.T) {
-	router, adminSvc := setupAccountDataRouter()
+	router, adminSvc := setupAccountDataRouter(t)
 	adminSvc.accounts = []service.Account{
 		{ID: 1, Name: "acc-1", Status: service.StatusActive},
 	}
@@ -184,6 +198,7 @@ func TestExportDataPassesAccountFiltersAndSort(t *testing.T) {
 		"/api/v1/admin/accounts/data?platform=openai&type=oauth&status=active&group=12&privacy_mode=blocked&search=keyword&sort_by=priority&sort_order=desc",
 		nil,
 	)
+	req.Header.Set(adminPasswordHeader, accountDataTestAdminPassword)
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -199,7 +214,7 @@ func TestExportDataPassesAccountFiltersAndSort(t *testing.T) {
 }
 
 func TestExportDataSelectedIDsOverrideFilters(t *testing.T) {
-	router, adminSvc := setupAccountDataRouter()
+	router, adminSvc := setupAccountDataRouter(t)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(
@@ -207,6 +222,7 @@ func TestExportDataSelectedIDsOverrideFilters(t *testing.T) {
 		"/api/v1/admin/accounts/data?ids=1,2&platform=openai&search=keyword&sort_by=priority&sort_order=desc",
 		nil,
 	)
+	req.Header.Set(adminPasswordHeader, accountDataTestAdminPassword)
 	router.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -217,8 +233,35 @@ func TestExportDataSelectedIDsOverrideFilters(t *testing.T) {
 	require.Equal(t, 0, adminSvc.lastListAccounts.calls)
 }
 
+func TestExportDataRequiresCurrentAdminPassword(t *testing.T) {
+	router, _ := setupAccountDataRouter(t)
+
+	for _, test := range []struct {
+		name     string
+		password string
+	}{
+		{name: "missing"},
+		{name: "incorrect", password: "wrong-password"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/accounts/data", nil)
+			if test.password != "" {
+				req.Header.Set(adminPasswordHeader, test.password)
+			}
+
+			router.ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+			require.Equal(t, "no-cache", rec.Header().Get("Pragma"))
+			require.NotContains(t, rec.Body.String(), "credentials")
+		})
+	}
+}
+
 func TestImportDataReusesProxyAndSkipsDefaultGroup(t *testing.T) {
-	router, adminSvc := setupAccountDataRouter()
+	router, adminSvc := setupAccountDataRouter(t)
 
 	adminSvc.proxies = []service.Proxy{
 		{

@@ -1,10 +1,96 @@
 package service
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 )
+
+const apiKeyStoragePrefix = "sha256$"
+
+// HashAPIKeyForStorage returns a one-way database representation while retaining
+// only a short prefix and suffix for identification in the UI.
+func HashAPIKeyForStorage(key string) string {
+	if _, _, _, ok := parseHashedAPIKey(key); ok {
+		return key
+	}
+	sum := sha256.Sum256([]byte(key))
+	encodedPrefix := hex.EncodeToString([]byte(apiKeyVisiblePrefix(key)))
+	encodedSuffix := hex.EncodeToString([]byte(apiKeyVisibleSuffix(key)))
+	return apiKeyStoragePrefix + hex.EncodeToString(sum[:]) + "$" + encodedPrefix + "$" + encodedSuffix
+}
+
+// APIKeyLookupValues supports databases that have not yet applied the hashing
+// migration. The hashed value is always preferred.
+func APIKeyLookupValues(key string) []string {
+	hashed := HashAPIKeyForStorage(key)
+	if hashed == key {
+		return []string{key}
+	}
+	return []string{hashed, key}
+}
+
+// MaskAPIKeyForDisplay never returns a usable secret for stored API key values.
+func MaskAPIKeyForDisplay(key string) string {
+	_, prefix, suffix, ok := parseHashedAPIKey(key)
+	if !ok {
+		prefix = apiKeyVisiblePrefix(key)
+		suffix = apiKeyVisibleSuffix(key)
+	}
+	if prefix == "" {
+		return ""
+	}
+	return prefix + "..." + suffix
+}
+
+// APIKeyCacheDigest returns the authentication cache key for either a plaintext
+// secret or its stored representation.
+func APIKeyCacheDigest(key string) string {
+	if digest, _, _, ok := parseHashedAPIKey(key); ok {
+		return digest
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
+func parseHashedAPIKey(value string) (digest, prefix, suffix string, ok bool) {
+	if !strings.HasPrefix(value, apiKeyStoragePrefix) {
+		return "", "", "", false
+	}
+	parts := strings.Split(value, "$")
+	if len(parts) != 4 || parts[0] != "sha256" || len(parts[1]) != sha256.Size*2 {
+		return "", "", "", false
+	}
+	if _, err := hex.DecodeString(parts[1]); err != nil {
+		return "", "", "", false
+	}
+	prefixBytes, err := hex.DecodeString(parts[2])
+	if err != nil || len(prefixBytes) > 6 {
+		return "", "", "", false
+	}
+	suffixBytes, err := hex.DecodeString(parts[3])
+	if err != nil || len(suffixBytes) > 4 {
+		return "", "", "", false
+	}
+	return parts[1], string(prefixBytes), string(suffixBytes), true
+}
+
+func apiKeyVisiblePrefix(key string) string {
+	if len(key) <= 6 {
+		return key
+	}
+	return key[:6]
+}
+
+func apiKeyVisibleSuffix(key string) string {
+	if len(key) <= 4 {
+		return ""
+	}
+	return key[len(key)-4:]
+}
 
 // API Key status constants
 const (

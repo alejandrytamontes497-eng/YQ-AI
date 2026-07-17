@@ -1224,57 +1224,11 @@ async function loadModelsFromKeys(keys: ApiKey[]): Promise<ChatModelOption[]> {
   const models = await chatAPI.listUserChatModels()
   const options = loadModelsFromUserChatModels(models, keys)
 
-  if (options.length > 0) {
-    return options
+  if (options.length === 0) {
+    availableModelNamesByKeyId.value = new Map()
   }
+  return options
 
-  const byKey = new Map<string, ChatModelOption>()
-  const namesByKeyId = new Map<number, Set<string>>()
-
-  const results = await Promise.allSettled(
-    keys.map(async (key) => ({
-      key,
-      models: await chatAPI.listModels(key.key)
-    }))
-  )
-
-  for (const result of results) {
-    if (result.status !== 'fulfilled') continue
-
-    const apiKey = result.value.key
-    const platform = apiKey.group?.platform || 'unknown'
-    const groupIds = typeof apiKey.group_id === 'number' ? [apiKey.group_id] : []
-
-    for (const rawName of result.value.models) {
-      const name = rawName.trim()
-      if (!name) continue
-
-      const keyModelNames = namesByKeyId.get(apiKey.id) ?? new Set<string>()
-      keyModelNames.add(name)
-      namesByKeyId.set(apiKey.id, keyModelNames)
-
-      const optionKey = `${platform}:${name}`
-      const existing = byKey.get(optionKey)
-      if (existing) {
-        existing.groupIds = Array.from(new Set([...existing.groupIds, ...groupIds]))
-        existing.keyIds = Array.from(new Set([...existing.keyIds, apiKey.id]))
-        continue
-      }
-
-      byKey.set(optionKey, {
-        value: optionKey,
-        label: `${name} · ${platformLabel(platform)}`,
-        model: name,
-        platform,
-        groupIds,
-        keyIds: [apiKey.id]
-      })
-    }
-  }
-
-  availableModelNamesByKeyId.value = namesByKeyId
-
-  return Array.from(byKey.values())
 }
 
 function mergeModelOptions(...sources: ChatModelOption[][]): ChatModelOption[] {

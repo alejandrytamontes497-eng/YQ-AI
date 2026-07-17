@@ -24,7 +24,7 @@ func TestAccountRepository_SetTempUnschedulable_NoRowsAffectedDoesNotWriteOutbox
 	require.NotContains(t, strings.Join(exec.execQueries, "\n"), "scheduler_outbox")
 }
 
-func TestAccountRepository_ListOAuthRefreshCandidates_SQLFilter(t *testing.T) {
+func TestAccountRepository_ListOAuthRefreshCandidates_DoesNotInspectEncryptedCredentialsInSQL(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
@@ -45,8 +45,8 @@ func TestAccountRepository_ListOAuthRefreshCandidates_SQLFilter(t *testing.T) {
 	require.Contains(t, normalized, "status = 'active'")
 	require.Contains(t, normalized, "type = 'oauth'")
 	require.Contains(t, normalized, "platform IN ('anthropic', 'openai', 'gemini', 'antigravity')")
-	require.Contains(t, normalized, "credentials ? 'refresh_token'")
-	require.Contains(t, normalized, "btrim(credentials->>'refresh_token') <> ''")
+	require.NotContains(t, normalized, "credentials ? 'refresh_token'")
+	require.NotContains(t, normalized, "credentials->>'refresh_token'")
 	require.Contains(t, normalized, "temp_unschedulable_until > NOW()")
 	require.Contains(t, normalized, "temp_unschedulable_reason LIKE 'token refresh retry exhausted:%'")
 	require.Contains(t, normalized, "IS NOT TRUE",

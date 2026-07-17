@@ -73,23 +73,29 @@ type schedulerCache struct {
 	rdb            *redis.Client
 	mgetChunkSize  int
 	writeChunkSize int
+	encryptor      service.SecretEncryptor
 }
 
-func NewSchedulerCache(rdb *redis.Client) service.SchedulerCache {
-	return newSchedulerCacheWithChunkSizes(rdb, defaultSchedulerSnapshotMGetChunkSize, defaultSchedulerSnapshotWriteChunkSize)
+func NewSchedulerCache(rdb *redis.Client, encryptors ...service.SecretEncryptor) service.SchedulerCache {
+	return newSchedulerCacheWithChunkSizes(rdb, defaultSchedulerSnapshotMGetChunkSize, defaultSchedulerSnapshotWriteChunkSize, encryptors...)
 }
 
-func newSchedulerCacheWithChunkSizes(rdb *redis.Client, mgetChunkSize, writeChunkSize int) service.SchedulerCache {
+func newSchedulerCacheWithChunkSizes(rdb *redis.Client, mgetChunkSize, writeChunkSize int, encryptors ...service.SecretEncryptor) service.SchedulerCache {
 	if mgetChunkSize <= 0 {
 		mgetChunkSize = defaultSchedulerSnapshotMGetChunkSize
 	}
 	if writeChunkSize <= 0 {
 		writeChunkSize = defaultSchedulerSnapshotWriteChunkSize
 	}
+	var encryptor service.SecretEncryptor
+	if len(encryptors) > 0 {
+		encryptor = encryptors[0]
+	}
 	return &schedulerCache{
 		rdb:            rdb,
 		mgetChunkSize:  mgetChunkSize,
 		writeChunkSize: writeChunkSize,
+		encryptor:      encryptor,
 	}
 }
 
@@ -140,7 +146,7 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		if val == nil {
 			return nil, false, nil
 		}
-		account, err := decodeCachedAccount(val)
+		account, err := c.decodeCachedAccount(val)
 		if err != nil {
 			return nil, false, err
 		}
@@ -217,7 +223,7 @@ func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*serv
 	if err != nil {
 		return nil, err
 	}
-	return decodeCachedAccount(val)
+	return c.decodeCachedAccount(val)
 }
 
 func (c *schedulerCache) SetAccount(ctx context.Context, account *service.Account) error {
@@ -257,16 +263,16 @@ func (c *schedulerCache) UpdateLastUsed(ctx context.Context, updates map[int64]t
 		if val == nil {
 			continue
 		}
-		account, err := decodeCachedAccount(val)
+		account, err := c.decodeCachedAccount(val)
 		if err != nil {
 			return err
 		}
 		account.LastUsedAt = ptrTime(updates[ids[i]])
-		updated, err := json.Marshal(account)
+		updated, err := c.encodeCachedAccount(*account)
 		if err != nil {
 			return err
 		}
-		metaPayload, err := json.Marshal(buildSchedulerMetadataAccount(*account))
+		metaPayload, err := c.encodeCachedAccount(buildSchedulerMetadataAccount(*account))
 		if err != nil {
 			return err
 		}
@@ -342,7 +348,7 @@ func ptrTime(t time.Time) *time.Time {
 	return &t
 }
 
-func decodeCachedAccount(val any) (*service.Account, error) {
+func decodeCachedAccountPayload(val any) (*service.Account, error) {
 	var payload []byte
 	switch raw := val.(type) {
 	case string:
@@ -357,6 +363,87 @@ func decodeCachedAccount(val any) (*service.Account, error) {
 		return nil, err
 	}
 	return &account, nil
+}
+
+func (c *schedulerCache) decodeCachedAccount(val any) (*service.Account, error) {
+	account, err := decodeCachedAccountPayload(val)
+	if err != nil {
+		return nil, err
+	}
+	credentials, err := decryptAccountCredentials(c.encryptor, account.Credentials)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt scheduler account %d credentials: %w", account.ID, err)
+	}
+	account.Credentials = credentials
+	return account, nil
+}
+
+func (c *schedulerCache) encodeCachedAccount(account service.Account) ([]byte, error) {
+	credentials, err := encryptAccountCredentials(c.encryptor, account.Credentials)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt scheduler account %d credentials: %w", account.ID, err)
+	}
+	account.Credentials = credentials
+	payload, err := json.Marshal(account)
+	if err != nil {
+		return nil, fmt.Errorf("marshal scheduler account %d: %w", account.ID, err)
+	}
+	return payload, nil
+}
+
+func (c *schedulerCache) migrateCredentialsAtRest(ctx context.Context) error {
+	if c == nil || c.rdb == nil || c.encryptor == nil {
+		return fmt.Errorf("scheduler credential encryption dependencies are not configured")
+	}
+
+	for _, prefix := range []string{schedulerAccountPrefix, schedulerAccountMetaPrefix} {
+		var cursor uint64
+		for {
+			keys, next, err := c.rdb.Scan(ctx, cursor, prefix+"*", 128).Result()
+			if err != nil {
+				return fmt.Errorf("scan scheduler account cache: %w", err)
+			}
+			if len(keys) > 0 {
+				values, err := c.rdb.MGet(ctx, keys...).Result()
+				if err != nil {
+					return fmt.Errorf("read scheduler account cache: %w", err)
+				}
+				pipe := c.rdb.Pipeline()
+				pending := 0
+				for i, value := range values {
+					if value == nil {
+						continue
+					}
+					account, err := decodeCachedAccountPayload(value)
+					if err != nil {
+						return fmt.Errorf("decode scheduler account cache %s: %w", keys[i], err)
+					}
+					if _, encrypted := accountCredentialsCiphertext(account.Credentials); encrypted {
+						if _, err := c.decodeCachedAccount(value); err != nil {
+							return fmt.Errorf("validate scheduler account cache %s: %w", keys[i], err)
+						}
+						continue
+					}
+					payload, err := c.encodeCachedAccount(*account)
+					if err != nil {
+						return fmt.Errorf("migrate scheduler account cache %s: %w", keys[i], err)
+					}
+					pipe.Set(ctx, keys[i], payload, 0)
+					pending++
+				}
+				if pending > 0 {
+					if _, err := pipe.Exec(ctx); err != nil {
+						return fmt.Errorf("persist encrypted scheduler account cache: %w", err)
+					}
+				}
+			}
+			cursor = next
+			if cursor == 0 {
+				break
+			}
+		}
+	}
+	return nil
 }
 
 func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.Account) error {
@@ -379,11 +466,11 @@ func (c *schedulerCache) writeAccounts(ctx context.Context, accounts []service.A
 	}
 
 	for _, account := range accounts {
-		fullPayload, err := json.Marshal(account)
+		fullPayload, err := c.encodeCachedAccount(account)
 		if err != nil {
 			return err
 		}
-		metaPayload, err := json.Marshal(buildSchedulerMetadataAccount(account))
+		metaPayload, err := c.encodeCachedAccount(buildSchedulerMetadataAccount(account))
 		if err != nil {
 			return err
 		}

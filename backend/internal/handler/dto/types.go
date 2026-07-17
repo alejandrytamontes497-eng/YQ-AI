@@ -52,6 +52,7 @@ type APIKey struct {
 	ID          int64      `json:"id"`
 	UserID      int64      `json:"user_id"`
 	Key         string     `json:"key"`
+	KeyRevealed bool       `json:"key_revealed"`
 	Name        string     `json:"name"`
 	GroupID     *int64     `json:"group_id"`
 	Status      string     `json:"status"`

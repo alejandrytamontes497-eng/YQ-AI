@@ -63,7 +63,7 @@ type OpsRepository interface {
 	GetLatestDailyBucketDate(ctx context.Context) (time.Time, bool, error)
 }
 
-// DeletedKeyAuditResult 是按明文 key 反查 deleted_api_key_audits 的结果。
+// DeletedKeyAuditResult is resolved by hashing the caller-provided key.
 type DeletedKeyAuditResult struct {
 	UserID  int64
 	KeyName string
