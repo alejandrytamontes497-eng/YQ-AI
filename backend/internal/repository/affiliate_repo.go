@@ -114,7 +114,7 @@ func (r *affiliateRepository) BindInviter(ctx context.Context, userID, inviterID
 	return bound, nil
 }
 
-func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, inviteeUserID int64, amount float64, freezeHours int, sourceOrderID *int64) (bool, error) {
+func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, inviteeUserID int64, amount float64, freezeHours int) (bool, error) {
 	if amount <= 0 {
 		return false, nil
 	}
@@ -140,15 +140,15 @@ func (r *affiliateRepository) AccrueQuota(ctx context.Context, inviterID, invite
 
 		if freezeHours > 0 {
 			if _, err = txClient.ExecContext(txCtx, `
-INSERT INTO user_affiliate_ledger (user_id, action, amount, source_user_id, source_order_id, frozen_until, created_at, updated_at)
-VALUES ($1, 'accrue', $2, $3, $4, NOW() + make_interval(hours => $5), NOW(), NOW())`,
-				inviterID, amount, inviteeUserID, nullableInt64Arg(sourceOrderID), freezeHours); err != nil {
+INSERT INTO user_affiliate_ledger (user_id, action, amount, source_user_id, frozen_until, created_at, updated_at)
+VALUES ($1, 'accrue', $2, $3, NOW() + make_interval(hours => $4), NOW(), NOW())`,
+				inviterID, amount, inviteeUserID, freezeHours); err != nil {
 				return fmt.Errorf("insert affiliate accrue ledger: %w", err)
 			}
 		} else {
 			if _, err = txClient.ExecContext(txCtx, `
-INSERT INTO user_affiliate_ledger (user_id, action, amount, source_user_id, source_order_id, created_at, updated_at)
-VALUES ($1, 'accrue', $2, $3, $4, NOW(), NOW())`, inviterID, amount, inviteeUserID, nullableInt64Arg(sourceOrderID)); err != nil {
+INSERT INTO user_affiliate_ledger (user_id, action, amount, source_user_id, created_at, updated_at)
+VALUES ($1, 'accrue', $2, $3, NOW(), NOW())`, inviterID, amount, inviteeUserID); err != nil {
 				return fmt.Errorf("insert affiliate accrue ledger: %w", err)
 			}
 		}
@@ -448,92 +448,6 @@ LIMIT $`+fmt.Sprint(len(args)-1)+` OFFSET $`+fmt.Sprint(len(args)), args...)
 			&item.InviteeUsername,
 			&item.AffCode,
 			&item.TotalRebate,
-			&item.CreatedAt,
-		); err != nil {
-			return nil, 0, err
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-	return items, total, nil
-}
-
-func (r *affiliateRepository) ListAffiliateRebateRecords(ctx context.Context, filter service.AffiliateRecordFilter) ([]service.AffiliateRebateRecord, int64, error) {
-	client := clientFromContext(ctx, r.client)
-	where, args := buildAffiliateRecordWhere(filter, "ual.created_at", []string{
-		"inviter.email", "inviter.username", "invitee.email", "invitee.username",
-		"po.id::text", "po.out_trade_no", "po.payment_type", "po.status",
-	})
-	baseJoin := `
-FROM user_affiliate_ledger ual
-JOIN payment_orders po ON po.id = ual.source_order_id
-JOIN users invitee ON invitee.id = ual.source_user_id
-JOIN users inviter ON inviter.id = ual.user_id
-WHERE ual.action = 'accrue'
-  AND ual.source_order_id IS NOT NULL`
-	if where != "" {
-		where = strings.Replace(where, "WHERE ", " AND ", 1)
-	}
-
-	total, err := queryAffiliateRecordCount(ctx, client, "SELECT COUNT(*) "+baseJoin+where, args...)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	orderBy := buildAffiliateRecordOrderBy(filter, map[string]string{
-		"order":         "po.id",
-		"inviter":       "inviter.email",
-		"invitee":       "invitee.email",
-		"order_amount":  "po.amount",
-		"pay_amount":    "po.pay_amount",
-		"rebate_amount": "ual.amount",
-		"payment_type":  "po.payment_type",
-		"order_status":  "po.status",
-		"created_at":    "ual.created_at",
-	}, "ual.created_at")
-	args = append(args, filter.PageSize, (filter.Page-1)*filter.PageSize)
-	rows, err := client.QueryContext(ctx, `
-SELECT po.id,
-       po.out_trade_no,
-       ual.user_id,
-       COALESCE(inviter.email, ''),
-       COALESCE(inviter.username, ''),
-       ual.source_user_id,
-       COALESCE(invitee.email, ''),
-       COALESCE(invitee.username, ''),
-       po.amount::double precision,
-       po.pay_amount::double precision,
-       ual.amount::double precision,
-       po.payment_type,
-       po.status,
-       ual.created_at
-`+baseJoin+where+`
-`+orderBy+`
-LIMIT $`+fmt.Sprint(len(args)-1)+` OFFSET $`+fmt.Sprint(len(args)), args...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	items := make([]service.AffiliateRebateRecord, 0)
-	for rows.Next() {
-		var item service.AffiliateRebateRecord
-		if err := rows.Scan(
-			&item.OrderID,
-			&item.OutTradeNo,
-			&item.InviterID,
-			&item.InviterEmail,
-			&item.InviterUsername,
-			&item.InviteeID,
-			&item.InviteeEmail,
-			&item.InviteeUsername,
-			&item.OrderAmount,
-			&item.PayAmount,
-			&item.RebateAmount,
-			&item.PaymentType,
-			&item.OrderStatus,
 			&item.CreatedAt,
 		); err != nil {
 			return nil, 0, err

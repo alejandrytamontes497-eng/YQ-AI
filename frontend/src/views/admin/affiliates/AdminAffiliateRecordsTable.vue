@@ -56,29 +56,8 @@
           <template #cell-aff_code="{ row }">
             <span class="font-mono text-sm text-gray-700 dark:text-gray-300">{{ row.aff_code || '-' }}</span>
           </template>
-          <template #cell-order="{ row }">
-            <div class="space-y-0.5">
-              <div class="font-mono text-sm text-gray-900 dark:text-white">#{{ row.order_id }}</div>
-              <div class="max-w-56 truncate text-sm text-gray-500 dark:text-dark-400">{{ row.out_trade_no }}</div>
-            </div>
-          </template>
-          <template #cell-payment_type="{ row }">
-            {{ t('payment.methods.' + row.payment_type, row.payment_type || '-') }}
-          </template>
-          <template #cell-order_status="{ row }">
-            <OrderStatusBadge :status="row.order_status" />
-          </template>
           <template #cell-total_rebate="{ row }">
             <AmountText :value="row.total_rebate" />
-          </template>
-          <template #cell-order_amount="{ row }">
-            <AmountText :value="row.order_amount" />
-          </template>
-          <template #cell-pay_amount="{ row }">
-            <span class="text-sm text-gray-900 dark:text-white">¥{{ formatAmount(row.pay_amount) }}</span>
-          </template>
-          <template #cell-rebate_amount="{ row }">
-            <AmountText :value="row.rebate_amount" strong />
           </template>
           <template #cell-amount="{ row }">
             <AmountText :value="row.amount" strong />
@@ -150,16 +129,15 @@ import DataTable from '@/components/common/DataTable.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
-import OrderStatusBadge from '@/components/payment/OrderStatusBadge.vue'
 import type { Column } from '@/components/common/types'
 import { useAppStore } from '@/stores/app'
-import { affiliatesAPI, type AffiliateInviteRecord, type AffiliateRebateRecord, type AffiliateTransferRecord, type AffiliateUserOverview, type ListAffiliateRecordsParams } from '@/api/admin/affiliates'
+import { affiliatesAPI, type AffiliateInviteRecord, type AffiliateTransferRecord, type AffiliateUserOverview, type ListAffiliateRecordsParams } from '@/api/admin/affiliates'
 import type { PaginatedResponse } from '@/types'
 import { extractI18nErrorMessage } from '@/utils/apiError'
 import { formatDateTime as formatDisplayDateTime } from '@/utils/format'
 
-type RecordType = 'invites' | 'rebates' | 'transfers'
-type AffiliateRecord = AffiliateInviteRecord | AffiliateRebateRecord | AffiliateTransferRecord
+type RecordType = 'invites' | 'transfers'
+type AffiliateRecord = AffiliateInviteRecord | AffiliateTransferRecord
 
 const props = defineProps<{
   type: RecordType
@@ -184,19 +162,6 @@ const columns = computed<Column[]>(() => {
       { key: 'aff_code', label: t('admin.affiliates.records.affCode'), sortable: true },
       { key: 'total_rebate', label: t('admin.affiliates.records.totalRebate'), sortable: true },
       { key: 'created_at', label: t('admin.affiliates.records.invitedAt'), sortable: true },
-    ]
-  }
-  if (props.type === 'rebates') {
-    return [
-      { key: 'order', label: t('admin.affiliates.records.order'), sortable: true },
-      { key: 'inviter', label: t('admin.affiliates.records.inviter'), sortable: true },
-      { key: 'invitee', label: t('admin.affiliates.records.invitee'), sortable: true },
-      { key: 'order_amount', label: t('admin.affiliates.records.orderAmount'), sortable: true },
-      { key: 'pay_amount', label: t('admin.affiliates.records.payAmount'), sortable: true },
-      { key: 'rebate_amount', label: t('admin.affiliates.records.rebateAmount') },
-      { key: 'payment_type', label: t('admin.affiliates.records.paymentType'), sortable: true },
-      { key: 'order_status', label: t('admin.affiliates.records.orderStatus'), sortable: true },
-      { key: 'created_at', label: t('admin.affiliates.records.rebatedAt'), sortable: true },
     ]
   }
   return [
@@ -255,9 +220,6 @@ function buildParams(): ListAffiliateRecordsParams {
 async function fetchRecords(params: ListAffiliateRecordsParams): Promise<PaginatedResponse<AffiliateRecord>> {
   if (props.type === 'invites') {
     return affiliatesAPI.listInviteRecords(params)
-  }
-  if (props.type === 'rebates') {
-    return affiliatesAPI.listRebateRecords(params)
   }
   return affiliatesAPI.listTransferRecords(params)
 }

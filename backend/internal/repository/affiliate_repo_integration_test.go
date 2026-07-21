@@ -105,8 +105,7 @@ LIMIT 1`, u.ID)
 // that already carries a transaction (via dbent.NewTxContext), repo.withTx
 // must reuse that tx rather than opening a nested one. If this invariant
 // breaks, AccrueQuota would commit independently and survive a rollback of
-// the outer tx, which would violate payment_fulfillment's all-or-nothing
-// semantics.
+// the outer transaction.
 func TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction(t *testing.T) {
 	ctx := context.Background()
 
@@ -145,7 +144,7 @@ func TestAffiliateRepository_AccrueQuota_ReusesOuterTransaction(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, bound, "invitee must bind to inviter")
 
-	applied, err := repo.AccrueQuota(txCtx, inviter.ID, invitee.ID, 3.5, 0, nil)
+	applied, err := repo.AccrueQuota(txCtx, inviter.ID, invitee.ID, 3.5, 0)
 	require.NoError(t, err)
 	require.True(t, applied, "AccrueQuota must report applied=true")
 

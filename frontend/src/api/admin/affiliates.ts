@@ -46,23 +46,6 @@ export interface AffiliateInviteRecord {
   created_at: string
 }
 
-export interface AffiliateRebateRecord {
-  order_id: number
-  out_trade_no: string
-  inviter_id: number
-  inviter_email: string
-  inviter_username: string
-  invitee_id: number
-  invitee_email: string
-  invitee_username: string
-  order_amount: number
-  pay_amount: number
-  rebate_amount: number
-  payment_type: string
-  order_status: string
-  created_at: string
-}
-
 export interface AffiliateTransferRecord {
   ledger_id: number
   user_id: number
@@ -186,16 +169,6 @@ export async function listInviteRecords(
   return data
 }
 
-export async function listRebateRecords(
-  params: ListAffiliateRecordsParams = {},
-): Promise<PaginatedResponse<AffiliateRebateRecord>> {
-  const { data } = await apiClient.get<PaginatedResponse<AffiliateRebateRecord>>(
-    '/admin/affiliates/rebates',
-    { params: recordParams(params) },
-  )
-  return data
-}
-
 export async function listTransferRecords(
   params: ListAffiliateRecordsParams = {},
 ): Promise<PaginatedResponse<AffiliateTransferRecord>> {
@@ -222,7 +195,6 @@ export const affiliatesAPI = {
   clearUserSettings,
   batchSetRate,
   listInviteRecords,
-  listRebateRecords,
   listTransferRecords,
   getUserOverview,
 }

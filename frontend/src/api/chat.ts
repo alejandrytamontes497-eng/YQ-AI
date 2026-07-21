@@ -34,6 +34,14 @@ export interface ChatCompletionStreamCallbacks {
   onUsage?: (usage: ChatCompletionUsage) => void
 }
 
+export interface ChatCompletionStreamResult {
+  usage: ChatCompletionUsage | null
+  finishReason: string
+  hasReasoning: boolean
+  hasToolCalls: boolean
+  receivedData: boolean
+}
+
 export interface ChatCompletionUsage {
   prompt_tokens?: number
   completion_tokens?: number
@@ -183,10 +191,54 @@ export async function createChatCompletion(request: ChatCompletionRequest): Prom
   return body as ChatCompletionResponse
 }
 
+function readContentText(content: unknown): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) return content.map(readContentText).join('')
+  if (!content || typeof content !== 'object') return ''
+
+  const part = content as Record<string, unknown>
+  if (typeof part.text === 'string') return part.text
+  if (part.text && typeof part.text === 'object') {
+    const value = (part.text as Record<string, unknown>).value
+    if (typeof value === 'string') return value
+  }
+  if (typeof part.output_text === 'string') return part.output_text
+  if (typeof part.refusal === 'string') return part.refusal
+  if (part.content !== undefined) return readContentText(part.content)
+  return ''
+}
+
 function readStreamDelta(body: any): string {
   const choice = body?.choices?.[0]
-  const content = choice?.delta?.content || choice?.message?.content || ''
-  return typeof content === 'string' ? content : ''
+  const deltaText = readContentText(choice?.delta?.content)
+  if (deltaText) return deltaText
+
+  const refusal = readContentText(choice?.delta?.refusal)
+  if (refusal) return refusal
+
+  const messageText = readContentText(choice?.message?.content)
+  if (messageText) return messageText
+
+  const messageRefusal = readContentText(choice?.message?.refusal)
+  if (messageRefusal) return messageRefusal
+
+  if (body?.type === 'response.output_text.delta' && typeof body?.delta === 'string') {
+    return body.delta
+  }
+  return ''
+}
+
+function readResponseText(body: any): string {
+  const choiceText = readStreamDelta(body)
+  if (choiceText) return choiceText
+  if (typeof body?.output_text === 'string') return body.output_text
+  if (Array.isArray(body?.output)) {
+    return body.output
+      .filter((item: any) => item?.type === 'message' || item?.content !== undefined)
+      .map((item: any) => readContentText(item?.content))
+      .join('')
+  }
+  return ''
 }
 
 function readStreamUsage(body: any): ChatCompletionUsage | null {
@@ -194,8 +246,41 @@ function readStreamUsage(body: any): ChatCompletionUsage | null {
 }
 
 function readStreamError(body: any): string {
-  if (!body?.error && !body?.message && !body?.detail) return ''
+  if (!body?.error && typeof body?.message !== 'string' && typeof body?.detail !== 'string') return ''
   return errorMessageFromBody(body, '')
+}
+
+function readFinishReason(body: any): string {
+  const choiceReason = body?.choices?.[0]?.finish_reason
+  if (typeof choiceReason === 'string' && choiceReason) return choiceReason
+
+  const response = body?.response ?? body
+  if (response?.status === 'incomplete' || body?.type === 'response.incomplete') {
+    const reason = response?.incomplete_details?.reason ?? body?.incomplete_details?.reason
+    return reason === 'max_output_tokens' ? 'length' : 'incomplete'
+  }
+  if (response?.status === 'failed' || body?.type === 'response.failed') return 'failed'
+  if (response?.status === 'completed' || body?.type === 'response.completed' || body?.type === 'response.done') return 'stop'
+  return ''
+}
+
+function hasReasoningContent(body: any): boolean {
+  const delta = body?.choices?.[0]?.delta
+  const message = body?.choices?.[0]?.message
+  return Boolean(
+    readContentText(delta?.reasoning_content) ||
+    readContentText(message?.reasoning_content) ||
+    (typeof body?.type === 'string' && body.type.includes('reasoning') && readContentText(body?.delta))
+  )
+}
+
+function hasToolCallContent(body: any): boolean {
+  const choice = body?.choices?.[0]
+  if (Array.isArray(choice?.delta?.tool_calls) && choice.delta.tool_calls.length > 0) return true
+  if (Array.isArray(choice?.message?.tool_calls) && choice.message.tool_calls.length > 0) return true
+  return Array.isArray(body?.output) && body.output.some((item: any) =>
+    item?.type === 'function_call' || item?.type === 'custom_tool_call'
+  )
 }
 
 function parseSSELines(buffer: string): { lines: string[]; rest: string } {
@@ -210,7 +295,7 @@ function parseSSELines(buffer: string): { lines: string[]; rest: string } {
 export async function createChatCompletionStream(
   request: ChatCompletionRequest,
   callbacks: ChatCompletionStreamCallbacks = {}
-): Promise<ChatCompletionUsage | null> {
+): Promise<ChatCompletionStreamResult> {
   const response = await fetch('/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -242,11 +327,38 @@ export async function createChatCompletionStream(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
+  let rawResponse = ''
   let responsePreview = ''
   let usage: ChatCompletionUsage | null = null
-  let hasStreamContent = false
+  let hasVisibleContent = false
   let hasDataLine = false
   let streamDone = false
+  let finishReason = ''
+  let hasReasoning = false
+  let hasToolCalls = false
+
+  const handleBody = (body: any) => {
+    const streamError = readStreamError(body)
+    if (streamError) {
+      throw new Error(streamError)
+    }
+
+    const delta = readStreamDelta(body)
+    if (delta) {
+      hasVisibleContent = true
+      callbacks.onDelta?.(delta)
+    }
+
+    const nextUsage = readStreamUsage(body)
+    if (nextUsage) {
+      usage = nextUsage
+      callbacks.onUsage?.(nextUsage)
+    }
+
+    finishReason = readFinishReason(body) || finishReason
+    hasReasoning = hasReasoningContent(body) || hasReasoning
+    hasToolCalls = hasToolCallContent(body) || hasToolCalls
+  }
 
   const handleLine = (line: string) => {
     const trimmed = line.trim()
@@ -268,23 +380,7 @@ export async function createChatCompletionStream(
       return
     }
 
-    const streamError = readStreamError(body)
-    if (streamError) {
-      throw new Error(streamError)
-    }
-
-    const delta = readStreamDelta(body)
-    if (delta) {
-      hasStreamContent = true
-      callbacks.onDelta?.(delta)
-    }
-
-    const nextUsage = readStreamUsage(body)
-    if (nextUsage) {
-      hasStreamContent = true
-      usage = nextUsage
-      callbacks.onUsage?.(nextUsage)
-    }
+    handleBody(body)
   }
 
   while (true) {
@@ -292,8 +388,8 @@ export async function createChatCompletionStream(
     try {
       result = await reader.read()
     } catch (error) {
-      if (hasStreamContent) {
-        return usage
+      if (hasVisibleContent) {
+        return { usage, finishReason, hasReasoning, hasToolCalls, receivedData: hasDataLine }
       }
       throw error
     }
@@ -304,6 +400,7 @@ export async function createChatCompletionStream(
     if (responsePreview.length < ERROR_MESSAGE_PREVIEW_LIMIT) {
       responsePreview += chunk.slice(0, ERROR_MESSAGE_PREVIEW_LIMIT - responsePreview.length)
     }
+    if (!hasDataLine) rawResponse += chunk
     buffer += chunk
     const parsed = parseSSELines(buffer)
     buffer = parsed.rest
@@ -323,6 +420,7 @@ export async function createChatCompletionStream(
     if (responsePreview.length < ERROR_MESSAGE_PREVIEW_LIMIT) {
       responsePreview += tail.slice(0, ERROR_MESSAGE_PREVIEW_LIMIT - responsePreview.length)
     }
+    if (!hasDataLine) rawResponse += tail
     buffer += tail
     if (buffer.trim()) handleLine(buffer)
   }
@@ -331,7 +429,30 @@ export async function createChatCompletionStream(
     throw new Error(htmlErrorMessage(responsePreview, response.status, response.statusText))
   }
 
-  return usage
+  if (!hasDataLine) {
+    const body = parseJsonBody(rawResponse)
+    if (!body) {
+      throw new Error('模型返回了无法识别的响应格式。')
+    }
+    const responseError = readStreamError(body)
+    if (responseError) throw new Error(responseError)
+
+    const text = readResponseText(body)
+    if (text) {
+      hasVisibleContent = true
+      callbacks.onDelta?.(text)
+    }
+    const nextUsage = readStreamUsage(body)
+    if (nextUsage) {
+      usage = nextUsage
+      callbacks.onUsage?.(nextUsage)
+    }
+    finishReason = readFinishReason(body) || finishReason
+    hasReasoning = hasReasoningContent(body) || hasReasoning
+    hasToolCalls = hasToolCallContent(body) || hasToolCalls
+  }
+
+  return { usage, finishReason, hasReasoning, hasToolCalls, receivedData: hasDataLine || Boolean(rawResponse.trim()) }
 }
 
 function normalizeModelItem(item: unknown): string {

@@ -158,31 +158,7 @@
                   class="message-image"
                 />
               </div>
-              <div v-if="messageText(message)" class="message-rendered-content">
-                <template v-for="part in messagePartsForMessage(message)" :key="part.id">
-                  <div v-if="part.type === 'text'" class="message-text whitespace-pre-wrap break-words">
-                    <template v-for="inline in inlinePartsForText(part.content, part.id)" :key="inline.id">
-                      <code v-if="inline.type === 'inline-code'" class="message-inline-code">{{ inline.content }}</code>
-                      <span v-else>{{ inline.content }}</span>
-                    </template>
-                  </div>
-                  <div v-else class="message-code-block">
-                    <div class="message-code-toolbar">
-                      <span>{{ part.language || (part.type === 'xml' ? 'XML' : 'Code') }}</span>
-                      <button
-                        class="message-code-copy"
-                        type="button"
-                        :title="copiedTarget === part.id ? '已复制' : '复制该片段'"
-                        @click="copyText(part.content, part.id)"
-                      >
-                        <Icon :name="copiedTarget === part.id ? 'check' : 'copy'" size="xs" :stroke-width="2" />
-                        <span>{{ copiedTarget === part.id ? '已复制' : '复制' }}</span>
-                      </button>
-                    </div>
-                    <pre><code>{{ part.content }}</code></pre>
-                  </div>
-                </template>
-              </div>
+              <div v-if="messageText(message)" class="message-rendered-content message-markdown" v-html="renderMarkdown(messageText(message))"></div>
               <div v-if="messageText(message) || message.role === 'assistant'" class="message-content whitespace-pre-wrap break-words">
                 {{ messageText(message) || '正在生成回复...' }}
               </div>
@@ -253,6 +229,8 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Input from '@/components/common/Input.vue'
@@ -298,19 +276,6 @@ interface CopySegment {
   title: string
   content: string
   type: 'code' | 'xml'
-}
-
-interface MessagePart {
-  id: string
-  type: 'text' | 'code' | 'xml'
-  content: string
-  language?: string
-}
-
-interface InlineMessagePart {
-  id: string
-  type: 'text' | 'inline-code'
-  content: string
 }
 
 interface PersistedChatState {
@@ -651,10 +616,6 @@ function copySegmentsForMessage(message: UiMessage): CopySegment[] {
   }))
 }
 
-function messagePartsForMessage(message: UiMessage): MessagePart[] {
-  return parseMessageParts(messageText(message), message.id)
-}
-
 function messageText(message: ChatMessage): string {
   if (typeof message.content === 'string') return message.content
   return message.content
@@ -683,96 +644,31 @@ function messagePreview(message: ChatMessage): string {
   return imageCount > 0 ? `发送了 ${imageCount} 张图片` : ''
 }
 
-function inlinePartsForText(content: string, parentID: string): InlineMessagePart[] {
-  if (!content) return []
+const markdownRenderer = new marked.Renderer()
+markdownRenderer.html = ({ text }) => escapeHtml(text)
 
-  const parts: InlineMessagePart[] = []
-  const inlinePattern = /`([^`\n]+)`/g
-  let cursor = 0
-  let match: RegExpExecArray | null
+marked.setOptions({
+  gfm: true,
+  breaks: true,
+  renderer: markdownRenderer
+})
 
-  while ((match = inlinePattern.exec(content)) !== null) {
-    if (match.index > cursor) {
-      appendInlineTextPart(parts, parentID, content.slice(cursor, match.index))
-    }
-    const inlineCode = match[1]?.trim()
-    if (inlineCode) {
-      parts.push({
-        id: `${parentID}:inline:${parts.length}`,
-        type: 'inline-code',
-        content: inlineCode
-      })
-    }
-    cursor = match.index + match[0].length
-  }
-
-  if (cursor < content.length) {
-    appendInlineTextPart(parts, parentID, content.slice(cursor))
-  }
-
-  return parts.length > 0 ? parts : [{ id: `${parentID}:inline:0`, type: 'text', content: stripInlineTicks(content) }]
-}
-
-function appendInlineTextPart(parts: InlineMessagePart[], parentID: string, raw: string) {
-  if (!raw) return
-  parts.push({
-    id: `${parentID}:inline:${parts.length}`,
-    type: 'text',
-    content: stripInlineTicks(raw)
+function renderMarkdown(content: string): string {
+  if (!content.trim()) return ''
+  const html = marked.parse(content, { async: false }) as string
+  return DOMPurify.sanitize(html, {
+    USE_PROFILES: { html: true },
+    ADD_ATTR: ['target', 'rel']
   })
 }
 
-function stripInlineTicks(text: string): string {
-  return text.replace(/`/g, '')
-}
-
-function parseMessageParts(content: string, messageID: string): MessagePart[] {
-  if (!content) return []
-
-  const parts: MessagePart[] = []
-  const fencedPattern = /```([^\n`]*)\n?([\s\S]*?)```/g
-  let cursor = 0
-  let match: RegExpExecArray | null
-
-  while ((match = fencedPattern.exec(content)) !== null) {
-    if (match.index > cursor) {
-      appendTextPart(parts, messageID, content.slice(cursor, match.index))
-    }
-    const language = match[1]?.trim()
-    const body = match[2]?.replace(/^\n|\n$/g, '').trim()
-    if (body) {
-      parts.push({
-        id: `${messageID}:part:${parts.length}`,
-        type: isXmlText(body) || language?.toLowerCase().includes('xml') ? 'xml' : 'code',
-        language: language || undefined,
-        content: body
-      })
-    }
-    cursor = match.index + match[0].length
-  }
-
-  if (cursor < content.length) {
-    appendTextPart(parts, messageID, content.slice(cursor))
-  }
-
-  if (parts.length === 0) {
-    const text = content.trim()
-    if (isXmlText(text)) {
-      return [{ id: `${messageID}:part:0`, type: 'xml', language: 'XML', content: text }]
-    }
-    return [{ id: `${messageID}:part:0`, type: 'text', content }]
-  }
-
-  return parts
-}
-
-function appendTextPart(parts: MessagePart[], messageID: string, raw: string) {
-  if (!raw) return
-  parts.push({
-    id: `${messageID}:part:${parts.length}`,
-    type: 'text',
-    content: raw
-  })
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 function extractCopySegments(content: string): Omit<CopySegment, 'id'>[] {
@@ -1088,6 +984,28 @@ function resetStreamRenderer() {
   resolveStreamDrain()
 }
 
+function emptyResponseMessage(result: Awaited<ReturnType<typeof chatAPI.createChatCompletionStream>>): string {
+  if (result.finishReason === 'length') {
+    return '模型输出已达到长度上限，尚未生成最终答案。请缩短上下文或重试。'
+  }
+  if (result.finishReason === 'content_filter') {
+    return '模型回复被内容过滤，未返回可显示内容。'
+  }
+  if (result.finishReason === 'tool_calls' || result.hasToolCalls) {
+    return '模型只返回了工具调用，但当前聊天页没有可执行的工具。'
+  }
+  if (result.finishReason === 'failed') {
+    return '模型生成失败，未返回最终答案。请重试。'
+  }
+  if (result.hasReasoning) {
+    return '模型完成了推理，但没有生成最终答案。请重试；若持续出现，请检查该模型的输出 token 配置。'
+  }
+  if (!result.receivedData) {
+    return '上游返回了空响应，请重试或检查模型渠道配置。'
+  }
+  return '上游响应中没有可显示文本，请重试或检查模型的响应格式。'
+}
+
 async function sendMessage() {
   const requestOption = selectedModelOption.value
   const requestKey = selectedKey.value
@@ -1124,7 +1042,7 @@ async function sendMessage() {
   sending.value = true
 
   try {
-    const usage = await chatAPI.createChatCompletionStream({
+    const result = await chatAPI.createChatCompletionStream({
       apiKey: requestKey.key,
       model: requestModel,
       messages: requestMessages,
@@ -1138,10 +1056,10 @@ async function sendMessage() {
 
     await waitForStreamDrain()
     if (!messageText(assistantMessage).trim()) {
-      assistantMessage.content = '模型没有返回可显示的内容。'
+      assistantMessage.content = emptyResponseMessage(result)
     }
     touchConversation(messageText(assistantMessage), 'assistant')
-    lastUsage.value = usage ?? lastUsage.value
+    lastUsage.value = result.usage ?? lastUsage.value
     await refreshSelectedKey()
   } catch (error) {
     flushStreamDeltaNow()
@@ -1448,6 +1366,42 @@ onBeforeUnmount(() => {
 .message-rendered-content {
   @apply space-y-3 pr-8;
 }
+
+.message-markdown {
+  @apply leading-7;
+}
+
+.message-markdown :deep(h1),
+.message-markdown :deep(h2),
+.message-markdown :deep(h3),
+.message-markdown :deep(h4) {
+  @apply mt-4 mb-2 font-semibold leading-tight first:mt-0;
+}
+
+.message-markdown :deep(h1) { @apply text-xl; }
+.message-markdown :deep(h2) { @apply text-lg; }
+.message-markdown :deep(h3) { @apply text-base; }
+.message-markdown :deep(p) { @apply mb-3 last:mb-0; }
+.message-markdown :deep(ul) { @apply mb-3 list-disc pl-6; }
+.message-markdown :deep(ol) { @apply mb-3 list-decimal pl-6; }
+.message-markdown :deep(li) { @apply mb-1; }
+.message-markdown :deep(blockquote) {
+  @apply my-3 border-l-4 border-primary-300 pl-3 text-gray-600 dark:border-primary-700 dark:text-gray-300;
+}
+.message-markdown :deep(a) { @apply text-primary-600 underline underline-offset-2 dark:text-primary-300; }
+.message-markdown :deep(strong) { @apply font-semibold; }
+.message-markdown :deep(code) {
+  @apply rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[0.9em] text-gray-800 dark:bg-dark-700 dark:text-gray-100;
+}
+.message-markdown :deep(pre) {
+  @apply my-3 max-w-full overflow-x-auto rounded-lg border border-gray-200 bg-gray-950 p-3 text-xs leading-5 text-gray-100 dark:border-dark-600;
+}
+.message-markdown :deep(pre code) { @apply bg-transparent p-0 text-inherit; }
+.message-markdown :deep(hr) { @apply my-4 border-gray-200 dark:border-dark-600; }
+.message-markdown :deep(table) { @apply my-3 w-full border-collapse text-left text-sm; }
+.message-markdown :deep(th),
+.message-markdown :deep(td) { @apply border border-gray-200 px-2 py-1.5 dark:border-dark-600; }
+.message-markdown :deep(th) { @apply bg-gray-50 font-semibold dark:bg-dark-700; }
 
 .message-rendered-content ~ .message-content,
 .message-rendered-content ~ .message-segment-actions {

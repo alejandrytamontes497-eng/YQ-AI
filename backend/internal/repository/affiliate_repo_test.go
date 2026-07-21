@@ -20,7 +20,6 @@ func TestAffiliateRecordQueriesUseLedgerAuditFields(t *testing.T) {
 	require.NoError(t, err)
 	content := string(source)
 
-	require.Contains(t, content, "JOIN payment_orders po ON po.id = ual.source_order_id")
 	require.Contains(t, content, "ual.amount::double precision")
 	require.Contains(t, content, "ual.balance_after::double precision")
 	require.NotContains(t, content, "parseAffiliateRebateAmount")
