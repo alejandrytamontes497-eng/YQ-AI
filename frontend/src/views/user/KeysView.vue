@@ -61,10 +61,9 @@
           <template #cell-key="{ value, row }">
             <div class="flex items-center gap-2">
               <code class="code text-xs">
-                {{ value }}
+                {{ maskApiKey(value) }}
               </code>
               <button
-                v-if="row.key_revealed"
                 @click="copyToClipboard(value, row.id)"
                 class="rounded-lg p-1 transition-colors hover:bg-gray-100 dark:hover:bg-dark-700"
                 :class="
@@ -313,7 +312,6 @@
             <div class="flex items-center gap-1">
               <!-- Use Key Button -->
               <button
-                v-if="row.key_revealed"
                 @click="openUseKeyModal(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-green-50 hover:text-green-600 dark:hover:bg-green-900/20 dark:hover:text-green-400"
               >
@@ -322,7 +320,7 @@
               </button>
               <!-- Import to CC Switch Button -->
               <button
-                v-if="row.key_revealed && !publicSettings?.hide_ccs_import_button"
+                v-if="!publicSettings?.hide_ccs_import_button"
                 @click="importToCcswitch(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/20 dark:hover:text-blue-400"
               >
@@ -1099,6 +1097,7 @@ import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
 import { formatDateTime } from '@/utils/format'
+import { maskApiKey } from '@/utils/maskApiKey'
 import {
   buildCcSwitchImportDeeplink,
   type CcSwitchClientType

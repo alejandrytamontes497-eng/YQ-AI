@@ -39,10 +39,9 @@ func (r *apiKeyRepository) activeQuery() *dbent.APIKeyQuery {
 }
 
 func (r *apiKeyRepository) Create(ctx context.Context, key *service.APIKey) error {
-	storedKey := service.HashAPIKeyForStorage(key.Key)
 	builder := r.client.APIKey.Create().
 		SetUserID(key.UserID).
-		SetKey(storedKey).
+		SetKey(key.Key).
 		SetName(key.Name).
 		SetStatus(key.Status).
 		SetNillableGroupID(key.GroupID).

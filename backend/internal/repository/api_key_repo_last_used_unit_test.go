@@ -65,6 +65,7 @@ func TestAPIKeyRepository_CreateWithLastUsedAt(t *testing.T) {
 
 	got, err := repo.GetByID(ctx, key.ID)
 	require.NoError(t, err)
+	require.Equal(t, key.Key, got.Key)
 	require.NotNil(t, got.LastUsedAt)
 	require.WithinDuration(t, lastUsed, *got.LastUsedAt, time.Second)
 }
@@ -153,4 +154,23 @@ func TestAPIKeyRepository_CreateDuplicateKey(t *testing.T) {
 	require.NoError(t, repo.Create(ctx, first))
 	err := repo.Create(ctx, second)
 	require.ErrorIs(t, err, service.ErrAPIKeyExists)
+}
+
+func TestAPIKeyRepository_GetByKeyForAuthWithMigratedClientToken(t *testing.T) {
+	repo, client := newAPIKeyRepoSQLite(t)
+	ctx := context.Background()
+	user := mustCreateAPIKeyRepoUser(t, ctx, client, "migrated-client-token@test.com")
+	stored := service.HashAPIKeyForStorage("sk-migrated-client-token-repository")
+
+	created, err := client.APIKey.Create().
+		SetUserID(user.ID).
+		SetKey(stored).
+		SetName("MigratedClientToken").
+		SetStatus(service.StatusActive).
+		Save(ctx)
+	require.NoError(t, err)
+
+	got, err := repo.GetByKeyForAuth(ctx, service.APIKeyForClient(stored))
+	require.NoError(t, err)
+	require.Equal(t, created.ID, got.ID)
 }

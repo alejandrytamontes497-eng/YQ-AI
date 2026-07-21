@@ -173,8 +173,6 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 		svcReq.RateLimit7d = *req.RateLimit7d
 	}
 
-	// The secret is returned once and must not be persisted in the idempotency
-	// response table or exposed again by list/detail endpoints.
 	key, err := h.apiKeyService.Create(c.Request.Context(), subject.UserID, svcReq)
 	if err != nil {
 		response.ErrorFrom(c, err)

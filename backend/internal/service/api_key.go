@@ -9,13 +9,19 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 )
 
-const apiKeyStoragePrefix = "sha256$"
+const (
+	apiKeyStoragePrefix    = "sha256$"
+	apiKeyClientHashPrefix = "sk-hash-"
+)
 
 // HashAPIKeyForStorage returns a one-way database representation while retaining
 // only a short prefix and suffix for identification in the UI.
 func HashAPIKeyForStorage(key string) string {
 	if _, _, _, ok := parseHashedAPIKey(key); ok {
 		return key
+	}
+	if stored, _, ok := parseClientHashedAPIKey(key); ok {
+		return stored
 	}
 	sum := sha256.Sum256([]byte(key))
 	encodedPrefix := hex.EncodeToString([]byte(apiKeyVisiblePrefix(key)))
@@ -26,11 +32,27 @@ func HashAPIKeyForStorage(key string) string {
 // APIKeyLookupValues supports databases that have not yet applied the hashing
 // migration. The hashed value is always preferred.
 func APIKeyLookupValues(key string) []string {
+	if stored, _, ok := parseClientHashedAPIKey(key); ok {
+		return []string{stored, key}
+	}
 	hashed := HashAPIKeyForStorage(key)
 	if hashed == key {
 		return []string{key}
 	}
 	return []string{hashed, key}
+}
+
+// APIKeyForClient converts a migrated database hash to an API-key-safe bearer
+// token. The token contains the same verifier data but avoids '$', which can be
+// altered by some proxy and client configurations. Plaintext keys are unchanged.
+func APIKeyForClient(key string) string {
+	digest, prefix, suffix, ok := parseHashedAPIKey(key)
+	if !ok {
+		return key
+	}
+	return apiKeyClientHashPrefix + digest + "-" +
+		hex.EncodeToString([]byte(prefix)) + "-" +
+		hex.EncodeToString([]byte(suffix))
 }
 
 // MaskAPIKeyForDisplay never returns a usable secret for stored API key values.
@@ -52,8 +74,27 @@ func APIKeyCacheDigest(key string) string {
 	if digest, _, _, ok := parseHashedAPIKey(key); ok {
 		return digest
 	}
+	if _, digest, ok := parseClientHashedAPIKey(key); ok {
+		return digest
+	}
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:])
+}
+
+func parseClientHashedAPIKey(value string) (stored, digest string, ok bool) {
+	if !strings.HasPrefix(value, apiKeyClientHashPrefix) {
+		return "", "", false
+	}
+	parts := strings.Split(strings.TrimPrefix(value, apiKeyClientHashPrefix), "-")
+	if len(parts) != 3 {
+		return "", "", false
+	}
+	stored = apiKeyStoragePrefix + parts[0] + "$" + parts[1] + "$" + parts[2]
+	digest, _, _, ok = parseHashedAPIKey(stored)
+	if !ok {
+		return "", "", false
+	}
+	return stored, digest, true
 }
 
 func parseHashedAPIKey(value string) (digest, prefix, suffix string, ok bool) {

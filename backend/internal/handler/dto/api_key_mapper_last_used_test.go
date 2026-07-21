@@ -39,14 +39,24 @@ func TestAPIKeyFromService_MapsNilLastUsedAt(t *testing.T) {
 	require.Nil(t, out.LastUsedAt)
 }
 
-func TestAPIKeyFromService_RedactsSecretExceptCreateResponse(t *testing.T) {
+func TestAPIKeyFromService_RevealsSecretForCopying(t *testing.T) {
 	src := &service.APIKey{Key: "sk-abcdefghijklmnopqrstuvwxyz0123456789"}
 
-	masked := APIKeyFromService(src)
-	require.Equal(t, "sk-abc...6789", masked.Key)
-	require.False(t, masked.KeyRevealed)
+	listed := APIKeyFromService(src)
+	require.Equal(t, src.Key, listed.Key)
+	require.True(t, listed.KeyRevealed)
 
-	revealed := APIKeyFromServiceWithSecret(src)
-	require.Equal(t, src.Key, revealed.Key)
-	require.True(t, revealed.KeyRevealed)
+	created := APIKeyFromServiceWithSecret(src)
+	require.Equal(t, src.Key, created.Key)
+	require.True(t, created.KeyRevealed)
+}
+
+func TestAPIKeyFromService_ConvertsMigratedHashToClientToken(t *testing.T) {
+	stored := service.HashAPIKeyForStorage("sk-migrated-abcdefghijklmnopqrstuvwxyz")
+
+	listed := APIKeyFromService(&service.APIKey{Key: stored})
+
+	require.Equal(t, service.APIKeyForClient(stored), listed.Key)
+	require.NotContains(t, listed.Key, "$")
+	require.True(t, listed.KeyRevealed)
 }
