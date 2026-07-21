@@ -296,6 +296,7 @@ const MAX_LOCAL_MESSAGES = 100
 const MAX_CONTEXT_MESSAGES = 10
 const MAX_IMAGE_ATTACHMENTS = 4
 const MAX_IMAGE_SIZE = 8 * 1024 * 1024
+const DEFAULT_CHAT_MAX_TOKENS = 32768
 const CHAT_HISTORY_STORAGE_PREFIX = 'chat_history_v1'
 const CHAT_SIDEBAR_COLLAPSED_KEY = 'chat_sidebar_collapsed'
 const STREAM_RENDER_MAX_CHARS_PER_FRAME = 160
@@ -1090,6 +1091,7 @@ async function sendMessage() {
       apiKey: requestKey.key,
       model: requestModel,
       messages: requestMessages,
+      max_tokens: DEFAULT_CHAT_MAX_TOKENS,
       signal: abortController.signal
     }, {
       onDelta: (delta) => appendAssistantMessage(assistantMessage, delta),

@@ -143,6 +143,8 @@ type AnthropicEventToResponsesState struct {
 	CreatedSent bool
 	// CompletedSent tracks whether the terminal event has been emitted.
 	CompletedSent bool
+	// StopReason is reported on the final Anthropic message_delta event.
+	StopReason string
 
 	// Current output tracking
 	OutputIndex     int
@@ -404,6 +406,10 @@ func anthToResHandleContentBlockStop(evt *AnthropicStreamEvent, state *Anthropic
 }
 
 func anthToResHandleMessageDelta(evt *AnthropicStreamEvent, state *AnthropicEventToResponsesState) []ResponsesStreamEvent {
+	if evt.Delta != nil && evt.Delta.StopReason != "" {
+		state.StopReason = evt.Delta.StopReason
+	}
+
 	// Update usage
 	if evt.Usage != nil {
 		state.OutputTokens = evt.Usage.OutputTokens
@@ -434,6 +440,10 @@ func anthToResHandleMessageStop(state *AnthropicEventToResponsesState) []Respons
 	// Determine status
 	status := "completed"
 	var incompleteDetails *ResponsesIncompleteDetails
+	if state.StopReason == "max_tokens" {
+		status = "incomplete"
+		incompleteDetails = &ResponsesIncompleteDetails{Reason: "max_output_tokens"}
+	}
 
 	// Emit response.completed
 	events = append(events, makeResponsesCompletedEvent(state, status, incompleteDetails))

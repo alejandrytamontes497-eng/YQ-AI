@@ -58,6 +58,18 @@ describe('chat completion stream parsing', () => {
     })
   })
 
+  it('forwards the configured output token limit', async () => {
+    vi.mocked(fetch).mockResolvedValue(streamResponse(['data: [DONE]\n\n']))
+
+    await createChatCompletionStream({ ...request, max_tokens: 32768 })
+
+    const [, init] = vi.mocked(fetch).mock.calls[0]
+    expect(JSON.parse(init?.body as string)).toMatchObject({
+      max_tokens: 32768,
+      stream: true
+    })
+  })
+
   it('uses a JSON completion when an upstream ignores stream mode', async () => {
     const body = JSON.stringify({
       choices: [{

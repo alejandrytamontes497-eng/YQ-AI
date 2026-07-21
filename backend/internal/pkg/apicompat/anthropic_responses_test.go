@@ -1733,3 +1733,40 @@ func TestAnthropicEventToResponses_CacheTokensFromMessageDelta(t *testing.T) {
 	require.NotNil(t, completed.Response.Usage.InputTokensDetails)
 	assert.Equal(t, 11, completed.Response.Usage.InputTokensDetails.CachedTokens)
 }
+
+func TestAnthropicEventToResponses_MaxTokensStopReasonBecomesIncomplete(t *testing.T) {
+	state := NewAnthropicEventToResponsesState()
+
+	AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type: "message_start",
+		Message: &AnthropicResponse{
+			ID:    "msg_max_tokens",
+			Model: "claude-fable-5",
+		},
+	}, state)
+	AnthropicEventToResponsesEvents(&AnthropicStreamEvent{
+		Type:  "message_delta",
+		Delta: &AnthropicDelta{StopReason: "max_tokens"},
+		Usage: &AnthropicUsage{OutputTokens: 8192},
+	}, state)
+
+	events := AnthropicEventToResponsesEvents(&AnthropicStreamEvent{Type: "message_stop"}, state)
+
+	var completed *ResponsesStreamEvent
+	for i := range events {
+		if events[i].Type == "response.completed" {
+			completed = &events[i]
+		}
+	}
+	require.NotNil(t, completed)
+	require.NotNil(t, completed.Response)
+	assert.Equal(t, "incomplete", completed.Response.Status)
+	require.NotNil(t, completed.Response.IncompleteDetails)
+	assert.Equal(t, "max_output_tokens", completed.Response.IncompleteDetails.Reason)
+
+	chatState := NewResponsesEventToChatState()
+	chunks := ResponsesEventToChatChunks(completed, chatState)
+	require.NotEmpty(t, chunks)
+	require.NotNil(t, chunks[0].Choices[0].FinishReason)
+	assert.Equal(t, "length", *chunks[0].Choices[0].FinishReason)
+}
