@@ -28,6 +28,25 @@
           {{ platformDescription }}
         </p>
 
+        <div class="overflow-hidden rounded-lg border border-gray-200 bg-gray-50 dark:border-dark-700 dark:bg-dark-800">
+          <div class="flex items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-dark-700">
+            <span class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('keys.apiKey') }}</span>
+            <button
+              type="button"
+              class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-dark-700 dark:hover:text-white"
+              :title="copiedIndex === -1 ? t('keys.copied') : t('keys.copyToClipboard')"
+              data-testid="copy-full-api-key"
+              @click="copyContent(props.apiKey, -1)"
+            >
+              <Icon :name="copiedIndex === -1 ? 'check' : 'clipboard'" size="sm" />
+            </button>
+          </div>
+          <code
+            class="block break-all px-3 py-3 font-mono text-sm leading-6 text-gray-800 dark:text-gray-100"
+            data-testid="full-api-key"
+          >{{ props.apiKey }}</code>
+        </div>
+
         <!-- Client Tabs -->
         <div v-if="clientTabs.length" class="border-b border-gray-200 dark:border-dark-700">
           <nav class="-mb-px flex space-x-6" aria-label="Client">

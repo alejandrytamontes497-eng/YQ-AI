@@ -938,7 +938,7 @@
           {{ t('keys.secretDialogWarning') }}
         </div>
         <div class="flex items-center gap-2 rounded-lg bg-gray-900 p-3">
-          <code class="min-w-0 flex-1 break-all font-mono text-sm text-gray-100">{{ createdKey.key }}</code>
+          <code class="min-w-0 flex-1 font-mono text-sm text-gray-100">{{ maskApiKey(createdKey.key) }}</code>
           <button
             type="button"
             class="shrink-0 rounded-md p-2 text-gray-300 transition-colors hover:bg-gray-700 hover:text-white"

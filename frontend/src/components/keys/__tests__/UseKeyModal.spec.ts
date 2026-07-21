@@ -17,6 +17,30 @@ vi.mock('@/composables/useClipboard', () => ({
 import UseKeyModal from '../UseKeyModal.vue'
 
 describe('UseKeyModal', () => {
+  it('shows the complete API key in the use-key dialog', () => {
+    const apiKey = 'sk-hash-0123456789abcdefghijklmnopqrstuvwxyz-abcdef-9876'
+    const wrapper = mount(UseKeyModal, {
+      props: {
+        show: true,
+        apiKey,
+        baseUrl: 'https://example.com/v1',
+        platform: 'openai'
+      },
+      global: {
+        stubs: {
+          BaseDialog: {
+            template: '<div><slot /><slot name="footer" /></div>'
+          },
+          Icon: {
+            template: '<span />'
+          }
+        }
+      }
+    })
+
+    expect(wrapper.get('[data-testid="full-api-key"]').text()).toBe(apiKey)
+  })
+
   it('renders GPT-5.5 and goals feature in OpenAI Codex config', () => {
     const wrapper = mount(UseKeyModal, {
       props: {

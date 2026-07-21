@@ -160,7 +160,14 @@
               </div>
               <div v-if="messageText(message)" class="message-rendered-content message-markdown" v-html="renderMarkdown(messageText(message))"></div>
               <div v-if="messageText(message) || message.role === 'assistant'" class="message-content whitespace-pre-wrap break-words">
-                {{ messageText(message) || '正在生成回复...' }}
+                <template v-if="messageText(message)">{{ messageText(message) }}</template>
+                <span v-else class="thinking-status">
+                  <span class="thinking-dot" />
+                  <span>思考中</span>
+                  <span v-if="isActiveThinkingMessage(message)" class="thinking-duration">
+                    · 已耗时 {{ formatThinkingElapsed(thinkingElapsedMs) }}
+                  </span>
+                </span>
               </div>
               <div v-if="copySegmentsForMessage(message).length > 0" class="message-segment-actions">
                 <button
@@ -179,7 +186,7 @@
           </div>
         </div>
 
-        <div v-if="errorMessage" class="mx-auto w-full max-w-5xl px-5 pb-3">
+        <div v-if="errorMessage" class="mx-auto w-full max-w-7xl px-5 pb-3">
           <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/40 dark:bg-red-900/10 dark:text-red-300">
             {{ errorMessage }}
           </div>
@@ -312,6 +319,7 @@ const loading = ref(false)
 const sending = ref(false)
 const errorMessage = ref('')
 const lastUsage = ref<ChatCompletionUsage | null>(null)
+const thinkingElapsedMs = ref(0)
 const messagesRef = ref<HTMLElement | null>(null)
 const copiedTarget = ref('')
 const sidebarCollapsed = ref(loadSidebarCollapsed())
@@ -322,6 +330,8 @@ let streamAssistantMessage: UiMessage | null = null
 let streamDeltaBuffer = ''
 let streamDrainResolvers: Array<() => void> = []
 let copyFeedbackTimer: number | null = null
+let thinkingTimer: number | null = null
+let thinkingStartedAt = 0
 const authStore = useAuthStore()
 let restoringHistory = true
 
@@ -981,7 +991,40 @@ function resetStreamRenderer() {
   }
   streamAssistantMessage = null
   streamDeltaBuffer = ''
+  stopThinkingTimer()
   resolveStreamDrain()
+}
+
+function startThinkingTimer() {
+  stopThinkingTimer()
+  thinkingStartedAt = Date.now()
+  thinkingElapsedMs.value = 0
+  thinkingTimer = window.setInterval(() => {
+    thinkingElapsedMs.value = Date.now() - thinkingStartedAt
+  }, 250)
+}
+
+function stopThinkingTimer() {
+  if (thinkingTimer !== null) {
+    window.clearInterval(thinkingTimer)
+    thinkingTimer = null
+  }
+  if (thinkingStartedAt > 0) {
+    thinkingElapsedMs.value = Date.now() - thinkingStartedAt
+    thinkingStartedAt = 0
+  }
+}
+
+function isActiveThinkingMessage(message: UiMessage): boolean {
+  return sending.value && streamAssistantMessage?.id === message.id
+}
+
+function formatThinkingElapsed(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000))
+  if (totalSeconds < 60) return `${totalSeconds} 秒`
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes} 分 ${seconds} 秒`
 }
 
 function emptyResponseMessage(result: Awaited<ReturnType<typeof chatAPI.createChatCompletionStream>>): string {
@@ -1040,6 +1083,7 @@ async function sendMessage() {
   streamAssistantMessage = assistantMessage
   abortController = new AbortController()
   sending.value = true
+  startThinkingTimer()
 
   try {
     const result = await chatAPI.createChatCompletionStream({
@@ -1236,7 +1280,9 @@ watch(selectedModel, () => {
 
 onMounted(async () => {
   loadStoredChatHistory()
+  await scrollToBottom()
   await loadChatData()
+  await scrollToBottom()
 })
 
 onBeforeUnmount(() => {
@@ -1316,7 +1362,7 @@ onBeforeUnmount(() => {
 }
 
 .message-row {
-  @apply mx-auto mb-5 flex w-full max-w-5xl gap-3;
+  @apply mx-auto mb-5 flex w-full max-w-7xl gap-3;
 }
 
 .message-row-user {
@@ -1340,7 +1386,7 @@ onBeforeUnmount(() => {
 }
 
 .message-bubble {
-  @apply relative max-w-[min(760px,calc(100%-3rem))] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm;
+  @apply relative max-w-[min(1040px,calc(100%-3rem))] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm;
 }
 
 .message-copy-button {
@@ -1353,6 +1399,18 @@ onBeforeUnmount(() => {
 
 .message-content {
   @apply pr-8;
+}
+
+.thinking-status {
+  @apply inline-flex items-center text-gray-500 dark:text-gray-400;
+}
+
+.thinking-dot {
+  @apply mr-2 h-2 w-2 rounded-full bg-primary-500 animate-pulse;
+}
+
+.thinking-duration {
+  @apply ml-1 tabular-nums text-gray-400 dark:text-gray-500;
 }
 
 .message-image-grid {
@@ -1453,7 +1511,7 @@ onBeforeUnmount(() => {
 }
 
 .composer-attachments {
-  @apply mx-auto mb-3 flex max-w-5xl flex-wrap gap-2;
+  @apply mx-auto mb-3 flex max-w-7xl flex-wrap gap-2;
 }
 
 .composer-attachment {
@@ -1469,7 +1527,7 @@ onBeforeUnmount(() => {
 }
 
 .composer-inner {
-  @apply mx-auto flex max-w-5xl items-end gap-3 rounded-2xl border border-gray-200 bg-white p-3 shadow-lg shadow-gray-900/5 dark:border-dark-700 dark:bg-dark-800;
+  @apply mx-auto flex max-w-7xl items-end gap-3 rounded-2xl border border-gray-200 bg-white p-3 shadow-lg shadow-gray-900/5 dark:border-dark-700 dark:bg-dark-800;
 }
 
 .upload-button {
