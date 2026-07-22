@@ -40,6 +40,13 @@ export interface ChatCompletionStreamResult {
   hasReasoning: boolean
   hasToolCalls: boolean
   receivedData: boolean
+  continuationCount?: number
+}
+
+export interface ChatCompletionContinuationOptions {
+  maxContinuations?: number
+  continuationPrompt?: string
+  emptyContinuationPrompt?: string
 }
 
 export interface ChatCompletionUsage {
@@ -455,6 +462,94 @@ export async function createChatCompletionStream(
   return { usage, finishReason, hasReasoning, hasToolCalls, receivedData: hasDataLine || Boolean(rawResponse.trim()) }
 }
 
+const DEFAULT_CONTINUATION_PROMPT = '请从上一条回答的中断处继续，只输出尚未输出的内容，不要重复已有内容。'
+const DEFAULT_EMPTY_CONTINUATION_PROMPT = '请直接回答上一条请求。上一轮未产生可见答案，请控制推理长度并优先给出完整的最终答案。'
+
+function sumUsage(
+  current: ChatCompletionUsage | null,
+  next: ChatCompletionUsage | null
+): ChatCompletionUsage | null {
+  if (!current) return next ? { ...next } : null
+  if (!next) return current
+
+  const sum = (left?: number, right?: number) =>
+    left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0)
+
+  return {
+    prompt_tokens: sum(current.prompt_tokens, next.prompt_tokens),
+    completion_tokens: sum(current.completion_tokens, next.completion_tokens),
+    total_tokens: sum(current.total_tokens, next.total_tokens)
+  }
+}
+
+function continuationMessages(
+  messages: ChatMessage[],
+  generatedText: string,
+  options: ChatCompletionContinuationOptions
+): ChatMessage[] {
+  const next = [...messages]
+  if (generatedText.trim()) {
+    next.push({ role: 'assistant', content: generatedText })
+    next.push({
+      role: 'user',
+      content: options.continuationPrompt || DEFAULT_CONTINUATION_PROMPT
+    })
+  } else {
+    next.push({
+      role: 'user',
+      content: options.emptyContinuationPrompt || DEFAULT_EMPTY_CONTINUATION_PROMPT
+    })
+  }
+  return next
+}
+
+export async function createChatCompletionStreamWithContinuation(
+  request: ChatCompletionRequest,
+  callbacks: ChatCompletionStreamCallbacks = {},
+  options: ChatCompletionContinuationOptions = {}
+): Promise<ChatCompletionStreamResult> {
+  const maxContinuations = Math.max(0, Math.floor(options.maxContinuations ?? 0))
+  let continuationCount = 0
+  let generatedText = ''
+  let totalUsage: ChatCompletionUsage | null = null
+  let requestMessages = request.messages
+  let hasReasoning = false
+  let hasToolCalls = false
+  let receivedData = false
+
+  while (true) {
+    const result = await createChatCompletionStream(
+      { ...request, messages: requestMessages },
+      {
+        onDelta: (delta) => {
+          generatedText += delta
+          callbacks.onDelta?.(delta)
+        }
+      }
+    )
+
+    totalUsage = sumUsage(totalUsage, result.usage)
+    hasReasoning = hasReasoning || result.hasReasoning
+    hasToolCalls = hasToolCalls || result.hasToolCalls
+    receivedData = receivedData || result.receivedData
+    if (totalUsage) callbacks.onUsage?.(totalUsage)
+
+    if (result.finishReason !== 'length' || continuationCount >= maxContinuations) {
+      return {
+        ...result,
+        usage: totalUsage,
+        hasReasoning,
+        hasToolCalls,
+        receivedData,
+        continuationCount
+      }
+    }
+
+    continuationCount += 1
+    requestMessages = continuationMessages(request.messages, generatedText, options)
+  }
+}
+
 function normalizeModelItem(item: unknown): string {
   if (typeof item === 'string') return item
   if (item && typeof item === 'object') {
@@ -507,6 +602,7 @@ export async function listUserChatModels(signal?: AbortSignal): Promise<UserChat
 export const chatAPI = {
   createChatCompletion,
   createChatCompletionStream,
+  createChatCompletionStreamWithContinuation,
   listModels,
   listUserChatModels
 }

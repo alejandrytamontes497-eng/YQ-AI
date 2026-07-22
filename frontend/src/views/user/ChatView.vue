@@ -297,6 +297,7 @@ const MAX_CONTEXT_MESSAGES = 10
 const MAX_IMAGE_ATTACHMENTS = 4
 const MAX_IMAGE_SIZE = 8 * 1024 * 1024
 const DEFAULT_CHAT_MAX_TOKENS = 32768
+const MAX_AUTO_CONTINUATIONS = 3
 const CHAT_HISTORY_STORAGE_PREFIX = 'chat_history_v1'
 const CHAT_SIDEBAR_COLLAPSED_KEY = 'chat_sidebar_collapsed'
 const STREAM_RENDER_MAX_CHARS_PER_FRAME = 160
@@ -1028,9 +1029,12 @@ function formatThinkingElapsed(elapsedMs: number): string {
   return `${minutes} 分 ${seconds} 秒`
 }
 
-function emptyResponseMessage(result: Awaited<ReturnType<typeof chatAPI.createChatCompletionStream>>): string {
+function emptyResponseMessage(result: Awaited<ReturnType<typeof chatAPI.createChatCompletionStreamWithContinuation>>): string {
   if (result.finishReason === 'length') {
-    return '模型输出已达到长度上限，尚未生成最终答案。请缩短上下文或重试。'
+    const continuationCount = result.continuationCount ?? 0
+    return continuationCount > 0
+      ? `模型已自动续写 ${continuationCount} 次，但仍达到输出上限，未能生成最终答案。建议换用输出上限更高的模型。`
+      : '模型输出已达到长度上限，尚未生成最终答案。'
   }
   if (result.finishReason === 'content_filter') {
     return '模型回复被内容过滤，未返回可显示内容。'
@@ -1087,7 +1091,7 @@ async function sendMessage() {
   startThinkingTimer()
 
   try {
-    const result = await chatAPI.createChatCompletionStream({
+    const result = await chatAPI.createChatCompletionStreamWithContinuation({
       apiKey: requestKey.key,
       model: requestModel,
       messages: requestMessages,
@@ -1098,11 +1102,15 @@ async function sendMessage() {
       onUsage: (nextUsage) => {
         lastUsage.value = nextUsage
       }
+    }, {
+      maxContinuations: MAX_AUTO_CONTINUATIONS
     })
 
     await waitForStreamDrain()
     if (!messageText(assistantMessage).trim()) {
       assistantMessage.content = emptyResponseMessage(result)
+    } else if (result.finishReason === 'length') {
+      errorMessage.value = `已自动续写 ${result.continuationCount ?? MAX_AUTO_CONTINUATIONS} 次，但模型仍达到输出上限；当前回答可能不完整。`
     }
     touchConversation(messageText(assistantMessage), 'assistant')
     lastUsage.value = result.usage ?? lastUsage.value
@@ -1111,6 +1119,7 @@ async function sendMessage() {
     flushStreamDeltaNow()
     const message = error instanceof Error ? error.message : '发送失败，请稍后重试。'
     if (messageText(assistantMessage).trim()) {
+      errorMessage.value = `回答生成中断：${message}`
       touchConversation(messageText(assistantMessage), 'assistant')
       return
     }
