@@ -251,7 +251,7 @@ const ERROR_MESSAGE_MAX_LENGTH = 360
 const REFERENCE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
 const REFERENCE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
-const sizeOptions: SelectOption[] = [
+const allSizeOptions: SelectOption[] = [
   { value: '1024x1024', label: '1:1 · 1024x1024 · 方图' },
   { value: '1536x1024', label: '3:2 · 1536x1024 · 横图' },
   { value: '1792x1024', label: '16:9 · 1792x1024 · 横图' },
@@ -259,6 +259,23 @@ const sizeOptions: SelectOption[] = [
   { value: '1024x1792', label: '9:16 · 1024x1792 · 竖图' },
   { value: 'auto', label: 'auto · 自动' }
 ]
+
+const fixed1KSizeMap: Record<string, string> = {
+  '1536x1024': '1248x832',
+  '1792x1024': '1344x768',
+  '1024x1536': '832x1248',
+  '1024x1792': '768x1344'
+}
+
+const sizeOptions = computed<SelectOption[]>(() => {
+  if (!isFixed1KModel(selectedModelOption.value?.model ?? selectedModel.value)) {
+    return allSizeOptions
+  }
+  return allSizeOptions.map((option) => {
+    const value = fixed1KSizeMap[String(option.value)] ?? String(option.value)
+    return { ...option, value, label: option.label.replace(String(option.value), value) }
+  })
+})
 
 const qualityOptions: SelectOption[] = [
   { value: 'auto', label: 'auto' },
@@ -287,6 +304,17 @@ const canGenerate = computed(() =>
 const activeJobs = computed(() =>
   jobs.value.filter((job) => job.status === 'pending' || job.status === 'running')
 )
+
+watch(selectedModel, (model) => {
+  if (isFixed1KModel(model)) {
+    selectedSize.value = fixed1KSizeMap[selectedSize.value] ?? selectedSize.value
+    return
+  }
+  const originalSize = Object.entries(fixed1KSizeMap).find(([, fixedSize]) => fixedSize === selectedSize.value)?.[0]
+  if (originalSize) {
+    selectedSize.value = originalSize
+  }
+})
 
 onMounted(async () => {
   loadDismissedImageIDs()
@@ -355,6 +383,10 @@ function loadModelsFromUserImageModels(models: UserImageModel[]): ImageModelOpti
   }
 
   return Array.from(byKey.values()).sort((a, b) => a.label.localeCompare(b.label))
+}
+
+function isFixed1KModel(model: string): boolean {
+  return /(?:^|[-_])1k(?:$|[-_])/i.test(model.trim())
 }
 
 function optimizePrompt() {

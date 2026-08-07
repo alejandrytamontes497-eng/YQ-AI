@@ -490,6 +490,22 @@ func modelsListCacheKey(groupID *int64, platform string) string {
 	return fmt.Sprintf("%d|%s", derefGroupID(groupID), strings.TrimSpace(platform))
 }
 
+func recentAPIKeyModelsListCacheKey(groupID *int64, apiKeyID int64, platform string) string {
+	return fmt.Sprintf("%d|%s|recent|%d", derefGroupID(groupID), strings.TrimSpace(platform), apiKeyID)
+}
+
+func modelsListCacheDimensions(key string) (int64, string, bool) {
+	parts := strings.SplitN(key, "|", 3)
+	if len(parts) < 2 {
+		return 0, "", false
+	}
+	groupID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, "", false
+	}
+	return groupID, parts[1], true
+}
+
 func recentAPIKeyAccountCacheKey(apiKeyID int64) string {
 	return fmt.Sprintf("models:recent-api-key:%d", apiKeyID)
 }
@@ -10589,7 +10605,18 @@ func (s *GatewayService) RememberRecentAPIKeyAccount(ctx context.Context, groupI
 	if s == nil {
 		return nil
 	}
-	return rememberRecentAPIKeyAccount(ctx, s.cache, groupID, apiKeyID, accountID)
+	if err := rememberRecentAPIKeyAccount(ctx, s.cache, groupID, apiKeyID, accountID); err != nil {
+		return err
+	}
+	if s.modelsListCache != nil && apiKeyID > 0 {
+		suffix := fmt.Sprintf("|recent|%d", apiKeyID)
+		for key := range s.modelsListCache.Items() {
+			if strings.HasSuffix(key, suffix) {
+				s.modelsListCache.Delete(key)
+			}
+		}
+	}
+	return nil
 }
 
 // GetRecentAPIKeyAccountModels returns the public model names exposed by the
@@ -10599,11 +10626,28 @@ func (s *GatewayService) GetRecentAPIKeyAccountModels(ctx context.Context, group
 	if s == nil || s.cache == nil || s.accountRepo == nil || groupID == nil || apiKeyID <= 0 {
 		return nil
 	}
+	modelsCacheKey := recentAPIKeyModelsListCacheKey(groupID, apiKeyID, platform)
+	if s.modelsListCache != nil {
+		if cached, found := s.modelsListCache.Get(modelsCacheKey); found {
+			if models, ok := cached.([]string); ok {
+				modelsListCacheHitTotal.Add(1)
+				return cloneStringSlice(models)
+			}
+		}
+	}
+	modelsListCacheMissTotal.Add(1)
+	storeModels := func(models []string) []string {
+		if s.modelsListCache != nil {
+			s.modelsListCache.Set(modelsCacheKey, cloneStringSlice(models), s.modelsListCacheTTL)
+			modelsListCacheStoreTotal.Add(1)
+		}
+		return cloneStringSlice(models)
+	}
 
 	cacheKey := recentAPIKeyAccountCacheKey(apiKeyID)
 	accountID, err := s.cache.GetSessionAccountID(ctx, *groupID, cacheKey)
 	if err != nil || accountID <= 0 {
-		return nil
+		return storeModels(nil)
 	}
 
 	accounts, err := s.accountRepo.ListSchedulableByGroupID(ctx, *groupID)
@@ -10622,7 +10666,7 @@ func (s *GatewayService) GetRecentAPIKeyAccountModels(ctx context.Context, group
 
 		mapping := account.GetModelMapping()
 		if len(mapping) == 0 {
-			return nil
+			return storeModels(nil)
 		}
 		models := make([]string, 0, len(mapping))
 		for model := range mapping {
@@ -10632,11 +10676,11 @@ func (s *GatewayService) GetRecentAPIKeyAccountModels(ctx context.Context, group
 			}
 		}
 		sort.Strings(models)
-		return models
+		return storeModels(models)
 	}
 
 	_ = s.cache.DeleteSessionAccountID(ctx, *groupID, cacheKey)
-	return nil
+	return storeModels(nil)
 }
 
 // GetAvailableModels returns the list of models available for a group
@@ -10720,26 +10764,16 @@ func (s *GatewayService) InvalidateAvailableModelsCache(groupID *int64, platform
 	}
 
 	normalizedPlatform := strings.TrimSpace(platform)
-	// 完整匹配时精准失效；否则按维度批量失效。
-	if groupID != nil && normalizedPlatform != "" {
-		s.modelsListCache.Delete(modelsListCacheKey(groupID, normalizedPlatform))
-		return
-	}
-
 	targetGroup := derefGroupID(groupID)
 	for key := range s.modelsListCache.Items() {
-		parts := strings.SplitN(key, "|", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		groupPart, parseErr := strconv.ParseInt(parts[0], 10, 64)
-		if parseErr != nil {
+		groupPart, keyPlatform, ok := modelsListCacheDimensions(key)
+		if !ok {
 			continue
 		}
 		if groupID != nil && groupPart != targetGroup {
 			continue
 		}
-		if normalizedPlatform != "" && parts[1] != normalizedPlatform {
+		if normalizedPlatform != "" && keyPlatform != normalizedPlatform {
 			continue
 		}
 		s.modelsListCache.Delete(key)

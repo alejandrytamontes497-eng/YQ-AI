@@ -18,7 +18,8 @@ import (
 type gatewayModelsAccountRepoStub struct {
 	service.AccountRepository
 
-	byGroup map[int64][]service.Account
+	byGroup   map[int64][]service.Account
+	listCalls int
 }
 
 type gatewayModelsCacheStub struct {
@@ -64,6 +65,7 @@ type gatewayModelItemForTest struct {
 }
 
 func (s *gatewayModelsAccountRepoStub) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]service.Account, error) {
+	s.listCalls++
 	accounts, ok := s.byGroup[groupID]
 	if !ok {
 		return nil, nil
@@ -432,30 +434,28 @@ func TestGatewayModels_PrefersMostRecentSuccessfulAPIKeyAccount(t *testing.T) {
 
 	groupID := int64(30)
 	cache := &gatewayModelsCacheStub{accountID: 2}
-	h := newGatewayModelsHandlerWithCacheForTest(
-		&gatewayModelsAccountRepoStub{
-			byGroup: map[int64][]service.Account{
-				groupID: {
-					{
-						ID:       1,
-						Platform: service.PlatformAnthropic,
-						Credentials: map[string]any{"model_mapping": map[string]any{
-							"claude-account-a": "upstream-a",
-						}},
-					},
-					{
-						ID:       2,
-						Platform: service.PlatformAnthropic,
-						Credentials: map[string]any{"model_mapping": map[string]any{
-							"claude-account-b":        "upstream-b",
-							"claude-account-b-hidden": "upstream-b-hidden",
-						}},
-					},
+	repo := &gatewayModelsAccountRepoStub{
+		byGroup: map[int64][]service.Account{
+			groupID: {
+				{
+					ID:       1,
+					Platform: service.PlatformAnthropic,
+					Credentials: map[string]any{"model_mapping": map[string]any{
+						"claude-account-a": "upstream-a",
+					}},
+				},
+				{
+					ID:       2,
+					Platform: service.PlatformAnthropic,
+					Credentials: map[string]any{"model_mapping": map[string]any{
+						"claude-account-b":        "upstream-b",
+						"claude-account-b-hidden": "upstream-b-hidden",
+					}},
 				},
 			},
 		},
-		cache,
-	)
+	}
+	h := newGatewayModelsHandlerWithCacheForTest(repo, cache)
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -479,6 +479,21 @@ func TestGatewayModels_PrefersMostRecentSuccessfulAPIKeyAccount(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, []string{"claude-account-b"}, modelIDsForTest(got.Data))
 	require.False(t, cache.deleted)
+
+	rec2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(rec2)
+	c2.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	c2.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{
+		ID: 99,
+		Group: &service.Group{
+			ID:               groupID,
+			Platform:         service.PlatformAnthropic,
+			ModelsListConfig: service.GroupModelsListConfig{Enabled: true, Models: []string{"claude-account-b"}},
+		},
+	})
+	h.Models(c2)
+	require.Equal(t, http.StatusOK, rec2.Code)
+	require.Equal(t, 1, repo.listCalls, "recent account models should use the short local cache")
 }
 
 func TestGatewayModels_StaleRecentAccountFallsBackToGroupModels(t *testing.T) {

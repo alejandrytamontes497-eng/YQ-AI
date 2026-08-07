@@ -265,7 +265,7 @@ func (h *ImageGenerationJobHandler) Create(c *gin.Context) {
 	payload["size"] = request.Size
 	payload["quality"] = request.Quality
 	payload["n"] = request.N
-	payload["response_format"] = "b64_json"
+	payload["response_format"] = "url"
 	delete(payload, "stream")
 	canonicalBody, err := json.Marshal(payload)
 	if err != nil {
@@ -495,7 +495,7 @@ func buildImageEditMultipart(job *service.ImageGenerationJob, imagePath string) 
 		"size":            job.Size,
 		"quality":         job.Quality,
 		"n":               strconv.Itoa(job.ImageCount),
-		"response_format": "b64_json",
+		"response_format": "url",
 	}
 	for _, name := range []string{"model", "prompt", "size", "quality", "n", "response_format"} {
 		if err := writer.WriteField(name, fields[name]); err != nil {

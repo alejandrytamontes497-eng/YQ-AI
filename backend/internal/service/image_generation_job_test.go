@@ -192,6 +192,65 @@ func TestImageGenerationJobServiceCompletesAndStoresImage(t *testing.T) {
 	require.Equal(t, png, stored)
 }
 
+func TestImageGenerationJobServiceDownloadsURLResponseAndStoresImage(t *testing.T) {
+	repo := newMemoryImageGenerationJobRepository()
+	svc := NewImageGenerationJobService(repo, &config.Config{ImageGenerationJobs: config.ImageGenerationJobsConfig{
+		WorkerCount: 1, PollIntervalSeconds: 1, TaskTimeoutSeconds: 5, StoragePath: t.TempDir(), MaxImageBytes: 1 << 20,
+	}})
+	png := []byte("\x89PNG\r\n\x1a\ndownloaded-image")
+	svc.downloader = func(_ context.Context, rawURL string, maxBytes int64) ([]byte, error) {
+		require.Equal(t, "https://images.example/generated.png", rawURL)
+		require.Equal(t, int64(1<<20), maxBytes)
+		return png, nil
+	}
+	svc.SetExecutor(func(_ context.Context, _ *ImageGenerationJob) ([]byte, error) {
+		return []byte(`{"data":[{"url":"https://images.example/generated.png"}]}`), nil
+	})
+	require.NoError(t, svc.Start())
+	t.Cleanup(svc.Stop)
+
+	job, err := svc.Submit(context.Background(), CreateImageGenerationJobInput{
+		UserID: 43, Model: "gpt-image-2", Prompt: "draw", Size: "1024x1024", Quality: "low", ImageCount: 1,
+		RequestBody: json.RawMessage(`{"model":"gpt-image-2","response_format":"url"}`),
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		current, getErr := svc.GetForUser(context.Background(), 43, job.ID)
+		return getErr == nil && current.Status == ImageGenerationJobStatusSucceeded
+	}, 3*time.Second, 20*time.Millisecond)
+
+	path, mimeType, err := svc.ImageFile(context.Background(), 43, job.ID, 0)
+	require.NoError(t, err)
+	require.Equal(t, "image/png", mimeType)
+	stored, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, png, stored)
+}
+
+func TestImageGenerationJobServiceStoresDataURLResponse(t *testing.T) {
+	svc := NewImageGenerationJobService(newMemoryImageGenerationJobRepository(), &config.Config{ImageGenerationJobs: config.ImageGenerationJobsConfig{
+		StoragePath: t.TempDir(), MaxImageBytes: 1 << 20,
+	}})
+	png := []byte("\x89PNG\r\n\x1a\ndata-url-image")
+	body, err := json.Marshal(map[string]any{"data": []map[string]any{{
+		"url": "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
+	}}})
+	require.NoError(t, err)
+	results, err := svc.persistResponse(context.Background(), &ImageGenerationJob{ID: "job-data-url", UserID: 44}, body)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "image/png", results[0].MimeType)
+	stored, err := os.ReadFile(svc.storageDir() + "/44/job-data-url/" + results[0].FileName)
+	require.NoError(t, err)
+	require.Equal(t, png, stored)
+}
+
+func TestImageGenerationJobServiceRejectsInsecureDownloadURL(t *testing.T) {
+	svc := NewImageGenerationJobService(newMemoryImageGenerationJobRepository(), &config.Config{})
+	_, err := svc.downloadGeneratedImage(context.Background(), "http://127.0.0.1/image.png", 1<<20)
+	require.ErrorContains(t, err, "invalid url scheme")
+}
+
 func TestImageGenerationJobServiceEnforcesUserQueueLimit(t *testing.T) {
 	repo := newMemoryImageGenerationJobRepository()
 	cfg := &config.Config{ImageGenerationJobs: config.ImageGenerationJobsConfig{MaxQueuedPerUser: 1}}

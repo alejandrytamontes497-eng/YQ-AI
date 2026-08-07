@@ -133,6 +133,7 @@ func (s *stickyGatewayCacheHotpathStub) GetSessionAccountID(ctx context.Context,
 }
 
 func (s *stickyGatewayCacheHotpathStub) SetSessionAccountID(ctx context.Context, groupID int64, sessionHash string, accountID int64, ttl time.Duration) error {
+	s.stickyID = accountID
 	return nil
 }
 
@@ -533,6 +534,33 @@ func TestGetAvailableModels_UsesShortCacheAndSupportsInvalidation(t *testing.T) 
 	require.Equal(t, int64(2), hit)
 	require.Equal(t, int64(2), miss)
 	require.Equal(t, int64(2), store)
+}
+
+func TestGetRecentAPIKeyAccountModels_UsesShortCacheAndInvalidatesOnRemember(t *testing.T) {
+	groupID := int64(19)
+	repo := &modelsListAccountRepoStub{byGroup: map[int64][]Account{
+		groupID: {
+			{ID: 1, Platform: PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"gpt-a": "upstream-a"}}},
+			{ID: 2, Platform: PlatformOpenAI, Credentials: map[string]any{"model_mapping": map[string]any{"gpt-b": "upstream-b"}}},
+		},
+	}}
+	cache := &stickyGatewayCacheHotpathStub{stickyID: 2}
+	svc := &GatewayService{
+		accountRepo:        repo,
+		cache:              cache,
+		modelsListCache:    gocache.New(time.Minute, time.Minute),
+		modelsListCacheTTL: time.Minute,
+	}
+
+	require.Equal(t, []string{"gpt-b"}, svc.GetRecentAPIKeyAccountModels(context.Background(), &groupID, 88, PlatformOpenAI))
+	require.Equal(t, []string{"gpt-b"}, svc.GetRecentAPIKeyAccountModels(context.Background(), &groupID, 88, PlatformOpenAI))
+	require.Equal(t, int64(1), cache.getCalls.Load())
+	require.Equal(t, int64(1), repo.listByGroupCalls.Load())
+
+	require.NoError(t, svc.RememberRecentAPIKeyAccount(context.Background(), &groupID, 88, 1))
+	require.Equal(t, []string{"gpt-a"}, svc.GetRecentAPIKeyAccountModels(context.Background(), &groupID, 88, PlatformOpenAI))
+	require.Equal(t, int64(2), cache.getCalls.Load())
+	require.Equal(t, int64(2), repo.listByGroupCalls.Load())
 }
 
 func TestGetAvailableModels_ErrorAndGlobalListBranches(t *testing.T) {

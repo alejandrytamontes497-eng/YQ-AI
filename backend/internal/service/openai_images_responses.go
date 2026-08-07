@@ -1628,6 +1628,14 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if err := validateOpenAIImagesModel(requestModel); err != nil {
 		return nil, err
 	}
+	upstreamParsed := parsed
+	if normalizedSize, ok := normalizeFixed1KImageSize(requestModel, parsed.Size); ok {
+		cloned := *parsed
+		cloned.Size = normalizedSize
+		cloned.SizeTier = normalizeOpenAIImageSizeTier(normalizedSize)
+		upstreamParsed = &cloned
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Clamped OAuth image size for fixed 1K SKU model=%s from=%s to=%s", requestModel, parsed.Size, normalizedSize)
+	}
 	logger.LegacyPrintf(
 		"service.openai_gateway",
 		"[OpenAI] Images request routing request_model=%s endpoint=%s account_type=%s uploads=%d",
@@ -1645,7 +1653,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	}
 
 	buildOAuthRequest := func(forceToolChoice bool) (*http.Request, error) {
-		responsesBody, err := buildOpenAIImagesResponsesRequest(parsed, requestModel, forceToolChoice)
+		responsesBody, err := buildOpenAIImagesResponsesRequest(upstreamParsed, requestModel, forceToolChoice)
 		if err != nil {
 			return nil, err
 		}

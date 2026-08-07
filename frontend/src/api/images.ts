@@ -57,7 +57,7 @@ export async function createImageJob(request: ImageGenerationRequest): Promise<I
     size: request.size,
     quality: request.quality || 'auto',
     n: request.n,
-    response_format: 'b64_json'
+    response_format: 'url'
   }
   let body: typeof payload | FormData = payload
   if (request.referenceImage) {

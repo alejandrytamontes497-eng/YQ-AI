@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -588,6 +589,13 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
+	if normalizedSize, ok := normalizeFixed1KImageSize(upstreamModel, parsed.Size); ok {
+		forwardBody, forwardContentType, err = rewriteOpenAIImagesSize(forwardBody, forwardContentType, normalizedSize)
+		if err != nil {
+			return nil, err
+		}
+		logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Clamped image size for fixed 1K SKU model=%s from=%s to=%s", upstreamModel, parsed.Size, normalizedSize)
+	}
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, parsed.Stream)
 	defer releaseUpstreamCtx()
 
@@ -627,6 +635,20 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if isFixed1KImageSizeError(upstreamMsg) {
+			if normalizedSize, ok := clampImageSizeTo1K(parsed.Size); ok {
+				retryBody, retryContentType, rewriteErr := rewriteOpenAIImagesSize(forwardBody, forwardContentType, normalizedSize)
+				if rewriteErr == nil {
+					retryParsed := *parsed
+					retryParsed.Size = normalizedSize
+					retryParsed.SizeTier = normalizeOpenAIImageSizeTier(normalizedSize)
+					retryParsed.ContentType = retryContentType
+					_ = resp.Body.Close()
+					logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Retrying fixed 1K image SKU after upstream size error from=%s to=%s", parsed.Size, normalizedSize)
+					return s.forwardOpenAIImagesAPIKey(ctx, c, account, retryBody, &retryParsed, channelMappedModel)
+				}
+			}
+		}
 		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				Platform:           account.Platform,
@@ -784,7 +806,86 @@ func rewriteOpenAIImagesModel(body []byte, contentType string, model string) ([]
 	return rewritten, contentType, nil
 }
 
+// normalizeFixed1KImageSize normalizes dimensions for fixed 1K image SKUs.
+// Explicit sizes above the 1MP budget, as well as auto/empty sizes whose
+// provider default may resolve above that budget, use the safe 1024 square.
+func normalizeFixed1KImageSize(model, size string) (string, bool) {
+	model = strings.ToLower(strings.TrimSpace(model))
+	isFixed1K := false
+	for _, token := range strings.FieldsFunc(model, func(r rune) bool { return r == '-' || r == '_' }) {
+		if token == "1k" {
+			isFixed1K = true
+			break
+		}
+	}
+	if !isFixed1K {
+		return "", false
+	}
+	return clampImageSizeTo1K(size)
+}
+
+func clampImageSizeTo1K(size string) (string, bool) {
+	const (
+		minPixels = int64(640 * 1024)
+		maxPixels = int64(1024 * 1024)
+		alignment = int64(16)
+	)
+	normalized := strings.ToLower(strings.TrimSpace(size))
+	if normalized == "" || normalized == "auto" {
+		return "1024x1024", true
+	}
+	parts := strings.Split(normalized, "x")
+	if len(parts) != 2 {
+		return "", false
+	}
+	width, errW := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+	height, errH := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+	if errW != nil || errH != nil || width <= 0 || height <= 0 || width > 1<<31 || height > 1<<31 {
+		return "", false
+	}
+	pixels := width * height
+	if pixels >= minPixels && pixels <= maxPixels && width%alignment == 0 && height%alignment == 0 {
+		return "", false
+	}
+	if pixels < minPixels {
+		return "1024x1024", true
+	}
+
+	scale := 1.0
+	if pixels > maxPixels {
+		scale = math.Sqrt(float64(maxPixels) / float64(pixels))
+	}
+	targetWidth := int64(math.Floor(float64(width)*scale/float64(alignment))) * alignment
+	targetHeight := int64(math.Floor(float64(height)*scale/float64(alignment))) * alignment
+	if targetWidth <= 0 || targetHeight <= 0 || targetWidth*targetHeight < minPixels {
+		return "1024x1024", true
+	}
+	return fmt.Sprintf("%dx%d", targetWidth, targetHeight), true
+}
+
+func isFixed1KImageSizeError(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(lower, "fixed 1k") &&
+		(strings.Contains(lower, "pixel budget") || strings.Contains(lower, "size exceeds"))
+}
+
+func rewriteOpenAIImagesSize(body []byte, contentType, size string) ([]byte, string, error) {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
+		return rewriteOpenAIImagesMultipartField(body, contentType, "size", size)
+	}
+	rewritten, err := sjson.SetBytes(body, "size", size)
+	if err != nil {
+		return nil, "", fmt.Errorf("rewrite image request size: %w", err)
+	}
+	return rewritten, contentType, nil
+}
+
 func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model string) ([]byte, string, error) {
+	return rewriteOpenAIImagesMultipartField(body, contentType, "model", model)
+}
+
+func rewriteOpenAIImagesMultipartField(body []byte, contentType, fieldName, value string) ([]byte, string, error) {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil {
 		return nil, "", fmt.Errorf("parse multipart content-type: %w", err)
@@ -797,7 +898,7 @@ func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model st
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	var buffer bytes.Buffer
 	writer := multipart.NewWriter(&buffer)
-	modelWritten := false
+	fieldWritten := false
 
 	for {
 		part, err := reader.NextPart()
@@ -816,12 +917,12 @@ func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model st
 			return nil, "", fmt.Errorf("create multipart part: %w", err)
 		}
 
-		if formName == "model" && part.FileName() == "" {
-			if _, err := target.Write([]byte(model)); err != nil {
+		if formName == fieldName && part.FileName() == "" {
+			if _, err := target.Write([]byte(value)); err != nil {
 				_ = part.Close()
-				return nil, "", fmt.Errorf("rewrite multipart model: %w", err)
+				return nil, "", fmt.Errorf("rewrite multipart %s: %w", fieldName, err)
 			}
-			modelWritten = true
+			fieldWritten = true
 			_ = part.Close()
 			continue
 		}
@@ -832,9 +933,9 @@ func rewriteOpenAIImagesMultipartModel(body []byte, contentType string, model st
 		_ = part.Close()
 	}
 
-	if !modelWritten {
-		if err := writer.WriteField("model", model); err != nil {
-			return nil, "", fmt.Errorf("append multipart model field: %w", err)
+	if !fieldWritten {
+		if err := writer.WriteField(fieldName, value); err != nil {
+			return nil, "", fmt.Errorf("append multipart %s field: %w", fieldName, err)
 		}
 	}
 	if err := writer.Close(); err != nil {

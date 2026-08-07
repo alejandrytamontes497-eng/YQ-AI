@@ -231,6 +231,93 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_LegacyImageModelUnknownSiz
 	require.Equal(t, "2K", parsed.SizeTier)
 }
 
+func TestNormalizeFixed1KImageSize(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		size  string
+		want  string
+		ok    bool
+	}{
+		{name: "fixed sku scales landscape", model: "adobe-firefly-gpt-image-2-1k", size: "1536x1024", want: "1248x832", ok: true},
+		{name: "fixed sku scales wide landscape", model: "adobe-firefly-gpt-image-2-1k", size: "1792x1024", want: "1344x768", ok: true},
+		{name: "fixed sku scales portrait", model: "adobe_firefly_1K", size: "1024x1536", want: "832x1248", ok: true},
+		{name: "fixed sku scales tall portrait", model: "adobe_firefly_1K", size: "1024x1792", want: "768x1344", ok: true},
+		{name: "fixed sku keeps within budget", model: "adobe-firefly-gpt-image-2-1k", size: "1024x768", ok: false},
+		{name: "fixed sku aligns dimensions", model: "adobe-firefly-gpt-image-2-1k", size: "1024x683", want: "1024x672", ok: true},
+		{name: "fixed sku keeps valid wide dimensions", model: "adobe-firefly-gpt-image-2-1k", size: "1344x768", ok: false},
+		{name: "fixed sku raises undersized request", model: "adobe-firefly-gpt-image-2-1k", size: "576x1024", want: "1024x1024", ok: true},
+		{name: "auto clamps to fixed sku budget", model: "adobe-firefly-gpt-image-2-1k", size: "auto", want: "1024x1024", ok: true},
+		{name: "2k sku keeps 2k landscape", model: "adobe-firefly-gpt-image-2-2k", size: "2048x1152", ok: false},
+		{name: "4k sku keeps 4k landscape", model: "adobe-firefly-gpt-image-2-4k", size: "3840x2160", ok: false},
+		{name: "non fixed sku passes through", model: "gpt-image-2", size: "1536x1024", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := normalizeFixed1KImageSize(tt.model, tt.size)
+			require.Equal(t, tt.ok, ok)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestOpenAIImagesSizeQualityMatrix(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		size string
+		tier string
+	}{
+		{size: "1024x1024", tier: "1K"},
+		{size: "1536x1024", tier: "2K"},
+		{size: "3840x2160", tier: "4K"},
+	}
+	for _, sizeCase := range tests {
+		for _, quality := range []string{"auto", "low", "medium", "high"} {
+			t.Run(sizeCase.tier+"/"+quality, func(t *testing.T) {
+				body := []byte(`{"model":"gpt-image-2","prompt":"draw a cat","size":"` + sizeCase.size + `","quality":"` + quality + `"}`)
+				req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				c.Request = req
+
+				parsed, err := (&OpenAIGatewayService{}).ParseOpenAIImagesRequest(c, body)
+				require.NoError(t, err)
+				require.Equal(t, sizeCase.size, parsed.Size)
+				require.Equal(t, sizeCase.tier, parsed.SizeTier)
+				require.Equal(t, quality, parsed.Quality)
+
+				responsesBody, err := buildOpenAIImagesResponsesRequest(parsed, "gpt-image-2", true)
+				require.NoError(t, err)
+				require.Equal(t, sizeCase.size, gjson.GetBytes(responsesBody, "tools.0.size").String())
+				require.Equal(t, quality, gjson.GetBytes(responsesBody, "tools.0.quality").String())
+			})
+		}
+	}
+}
+
+func TestRewriteOpenAIImagesSizeMultipart(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("model", "gpt-image-2"))
+	require.NoError(t, writer.WriteField("size", "1536x1024"))
+	require.NoError(t, writer.WriteField("prompt", "draw a cat"))
+	require.NoError(t, writer.Close())
+
+	rewritten, contentType, err := rewriteOpenAIImagesSize(body.Bytes(), writer.FormDataContentType(), "1024x1024")
+	require.NoError(t, err)
+	require.Equal(t, "multipart/form-data", strings.Split(contentType, ";")[0])
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", bytes.NewReader(rewritten))
+	req.Header.Set("Content-Type", contentType)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = req
+	parsed, err := (&OpenAIGatewayService{}).ParseOpenAIImagesRequest(c, rewritten)
+	require.NoError(t, err)
+	require.Equal(t, "1024x1024", parsed.Size)
+}
+
 func TestOpenAIGatewayServiceParseOpenAIImagesRequest_MultipartEditWithMaskAndNativeOptions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

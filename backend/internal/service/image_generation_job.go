@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	sharedhttp "github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
 const (
@@ -87,6 +90,7 @@ type ImageGenerationJobRepository interface {
 }
 
 type ImageGenerationJobExecutor func(ctx context.Context, job *ImageGenerationJob) ([]byte, error)
+type imageGenerationImageDownloader func(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error)
 
 type ImageGenerationJobEvent struct {
 	Job ImageGenerationJob `json:"job"`
@@ -98,6 +102,7 @@ type ImageGenerationJobService struct {
 
 	executorMu sync.RWMutex
 	executor   ImageGenerationJobExecutor
+	downloader imageGenerationImageDownloader
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -301,7 +306,7 @@ func (s *ImageGenerationJobService) execute(job *ImageGenerationJob) {
 		s.finishFailed(job, err.Error())
 		return
 	}
-	results, err := s.persistResponse(job, body)
+	results, err := s.persistResponse(ctx, job, body)
 	if err != nil {
 		s.finishFailed(job, err.Error())
 		return
@@ -388,7 +393,7 @@ func (s *ImageGenerationJobService) finishFailed(job *ImageGenerationJob, messag
 	}
 }
 
-func (s *ImageGenerationJobService) persistResponse(job *ImageGenerationJob, body []byte) ([]ImageGenerationJobResult, error) {
+func (s *ImageGenerationJobService) persistResponse(ctx context.Context, job *ImageGenerationJob, body []byte) ([]ImageGenerationJobResult, error) {
 	var payload struct {
 		Data []struct {
 			B64JSON       string `json:"b64_json"`
@@ -412,35 +417,107 @@ func (s *ImageGenerationJobService) persistResponse(job *ImageGenerationJob, bod
 	results := make([]ImageGenerationJobResult, 0, len(payload.Data))
 	for index, item := range payload.Data {
 		result := ImageGenerationJobResult{Index: index, RevisedPrompt: item.RevisedPrompt}
+		var data []byte
 		if strings.TrimSpace(item.B64JSON) != "" {
-			data, err := base64.StdEncoding.DecodeString(item.B64JSON)
+			decoded, err := base64.StdEncoding.DecodeString(item.B64JSON)
 			if err != nil {
 				return nil, fmt.Errorf("decode generated image %d: %w", index, err)
 			}
-			if int64(len(data)) > s.maxImageBytes() {
-				return nil, fmt.Errorf("generated image %d exceeds storage limit", index)
-			}
-			format, mimeType := generatedImageFormat(data, item.OutputFormat)
-			fileName := fmt.Sprintf("%d.%s", index, format)
-			if err := writeFileAtomic(filepath.Join(dir, fileName), data); err != nil {
-				return nil, fmt.Errorf("store generated image %d: %w", index, err)
-			}
-			result.FileName = fileName
-			result.MimeType = mimeType
-			result.ByteSize = int64(len(data))
+			data = decoded
 		} else {
-			result.UpstreamURL = strings.TrimSpace(item.DownloadURL)
-			if result.UpstreamURL == "" {
-				result.UpstreamURL = strings.TrimSpace(item.URL)
+			imageURL := strings.TrimSpace(item.DownloadURL)
+			if imageURL == "" {
+				imageURL = strings.TrimSpace(item.URL)
 			}
-			if result.UpstreamURL == "" {
+			if imageURL == "" {
 				return nil, fmt.Errorf("generated image %d has no data", index)
 			}
-			result.MimeType = outputFormatMimeType(item.OutputFormat)
+			if strings.HasPrefix(strings.ToLower(imageURL), "data:image/") {
+				comma := strings.IndexByte(imageURL, ',')
+				if comma <= 0 || !strings.Contains(strings.ToLower(imageURL[:comma]), ";base64") {
+					return nil, fmt.Errorf("decode generated image %d: invalid data URL", index)
+				}
+				decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(imageURL[comma+1:]))
+				if err != nil {
+					return nil, fmt.Errorf("decode generated image %d: %w", index, err)
+				}
+				data = decoded
+			} else {
+				downloader := s.downloader
+				if downloader == nil {
+					downloader = s.downloadGeneratedImage
+				}
+				downloaded, err := downloader(ctx, imageURL, s.maxImageBytes())
+				if err != nil {
+					return nil, fmt.Errorf("download generated image %d: %w", index, err)
+				}
+				data = downloaded
+			}
 		}
+		if int64(len(data)) > s.maxImageBytes() {
+			return nil, fmt.Errorf("generated image %d exceeds storage limit", index)
+		}
+		format, mimeType := generatedImageFormat(data, item.OutputFormat)
+		fileName := fmt.Sprintf("%d.%s", index, format)
+		if err := writeFileAtomic(filepath.Join(dir, fileName), data); err != nil {
+			return nil, fmt.Errorf("store generated image %d: %w", index, err)
+		}
+		result.FileName = fileName
+		result.MimeType = mimeType
+		result.ByteSize = int64(len(data))
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+func (s *ImageGenerationJobService) downloadGeneratedImage(ctx context.Context, rawURL string, maxBytes int64) ([]byte, error) {
+	allowPrivate := s != nil && s.cfg != nil && s.cfg.Security.URLAllowlist.AllowPrivateHosts
+	normalized, err := urlvalidator.ValidateHTTPSURL(rawURL, urlvalidator.ValidationOptions{AllowPrivate: allowPrivate})
+	if err != nil {
+		return nil, err
+	}
+	client, err := sharedhttp.GetClient(sharedhttp.Options{
+		Timeout:               2 * time.Minute,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ValidateResolvedIP:    true,
+		AllowPrivateHosts:     allowPrivate,
+		MaxIdleConnsPerHost:   16,
+	})
+	if err != nil {
+		return nil, err
+	}
+	requestClient := *client
+	requestClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many image download redirects")
+		}
+		_, validateErr := urlvalidator.ValidateHTTPSURL(req.URL.String(), urlvalidator.ValidationOptions{AllowPrivate: allowPrivate})
+		return validateErr
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalized, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "image/*")
+	resp, err := requestClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("image download returned HTTP %d", resp.StatusCode)
+	}
+	if maxBytes <= 0 {
+		maxBytes = 64 << 20
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, errors.New("downloaded image exceeds storage limit")
+	}
+	return data, nil
 }
 
 func (s *ImageGenerationJobService) publish(job ImageGenerationJob) {

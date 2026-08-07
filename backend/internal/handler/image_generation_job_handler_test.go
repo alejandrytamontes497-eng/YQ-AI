@@ -76,6 +76,7 @@ func TestBuildImageEditMultipart(t *testing.T) {
 	require.True(t, parsed.IsEdits())
 	require.Equal(t, "gpt-image-2", parsed.Model)
 	require.Equal(t, "follow this composition", parsed.Prompt)
+	require.Equal(t, "url", parsed.ResponseFormat)
 	require.Len(t, parsed.Uploads, 1)
 	require.Equal(t, "image/png", parsed.Uploads[0].ContentType)
 	require.Equal(t, imageData, parsed.Uploads[0].Data)
