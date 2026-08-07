@@ -969,8 +969,10 @@ function isMarkupLikeErrorMessage(message: string): boolean {
 }
 
 function isGenericUpstreamErrorMessage(message: string): boolean {
-  return /^(?:upstream request failed(?: \(status \d+\))?|upstream gateway error|image generation request failed)$/i.test(
-    message.trim()
+  const value = message.trim()
+  return (
+    /^(?:upstream request failed(?: \(status \d+\))?|upstream gateway error|image generation request failed)$/i.test(value) ||
+    /origin web server returned an invalid or incomplete response|cloudflare|error code:\s*50[0-9]/i.test(value)
   )
 }
 

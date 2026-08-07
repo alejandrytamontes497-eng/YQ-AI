@@ -421,11 +421,18 @@ func openAIImageUploadToDataURL(upload OpenAIImagesUpload) (string, error) {
 	if len(upload.Data) == 0 {
 		return "", fmt.Errorf("upload %q is empty", strings.TrimSpace(upload.FileName))
 	}
-	contentType := strings.TrimSpace(upload.ContentType)
-	if contentType == "" {
-		contentType = http.DetectContentType(upload.Data)
+	data, normalizedType, err := normalizeOpenAIInlineImage(upload.Data)
+	if err != nil {
+		return "", fmt.Errorf("normalize upload %q: %w", strings.TrimSpace(upload.FileName), err)
 	}
-	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(upload.Data), nil
+	contentType := strings.TrimSpace(normalizedType)
+	if contentType == "" {
+		contentType = strings.TrimSpace(upload.ContentType)
+	}
+	if contentType == "" {
+		contentType = http.DetectContentType(data)
+	}
+	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
 func buildOpenAIImagesResponsesRequest(parsed *OpenAIImagesRequest, toolModel string, forceToolChoice bool) ([]byte, error) {
