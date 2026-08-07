@@ -309,6 +309,8 @@ function optimizePrompt() {
 }
 
 async function generate() {
+  if (submitting.value) return
+
   const option = selectedModelOption.value
   const text = prompt.value.trim()
   if (!option || !text) {
@@ -417,7 +419,7 @@ async function hydrateCompletedJob(job: ImageGenerationJob) {
       })
     }
     if (items.length > 0) {
-      const nextGallery = [...items, ...gallery.value]
+      const nextGallery = uniqueGalleryItems([...items, ...gallery.value])
       for (const droppedItem of nextGallery.slice(24)) {
         revokeGalleryItemUrls(droppedItem)
         originalBlobs.delete(droppedItem.id)
@@ -434,6 +436,14 @@ async function hydrateCompletedJob(job: ImageGenerationJob) {
 
 function jobImageID(jobID: string, index: number): string {
   return `${jobID}:${index}`
+}
+
+function uniqueGalleryItems(items: GalleryItem[]): GalleryItem[] {
+  const byID = new Map<string, GalleryItem>()
+  for (const item of items) {
+    if (!byID.has(item.id)) byID.set(item.id, item)
+  }
+  return Array.from(byID.values())
 }
 
 function formatJobTime(value: string): string {
@@ -655,7 +665,7 @@ async function loadGallery() {
         hydrated.push(restored)
       }
     }
-    gallery.value = hydrated
+    gallery.value = uniqueGalleryItems(hydrated)
   } catch {
     gallery.value = []
   }
