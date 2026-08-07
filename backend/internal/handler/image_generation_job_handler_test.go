@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -37,6 +38,21 @@ func TestParseImageGenerationJobCreateRequestMultipart(t *testing.T) {
 			require.Equal(t, "gpt-image-2", model)
 		})
 	}
+}
+
+func TestParseImageGenerationJobCreateRequestRejectsJSONEncodedImage(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/user/images/jobs", strings.NewReader(
+		`{"model":"gpt-image-2","prompt":"draw","image":{}}`,
+	))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	_, _, _, err := parseImageGenerationJobCreateRequest(c)
+	var requestErr *imageGenerationJobRequestError
+	require.ErrorAs(t, err, &requestErr)
+	require.Equal(t, http.StatusUnsupportedMediaType, requestErr.statusCode)
+	require.Contains(t, requestErr.message, "multipart/form-data")
 }
 
 func TestBuildImageEditMultipart(t *testing.T) {

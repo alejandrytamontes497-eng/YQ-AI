@@ -122,6 +122,12 @@ func parseImageGenerationJobCreateRequest(c *gin.Context) (
 		if len(body) == 0 || json.Unmarshal(body, &request) != nil || json.Unmarshal(body, &payload) != nil {
 			return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Invalid image generation request"}
 		}
+		if _, hasImage := payload["image"]; hasImage {
+			return request, nil, nil, &imageGenerationJobRequestError{
+				http.StatusUnsupportedMediaType,
+				"Reference image request must use multipart/form-data",
+			}
+		}
 		return request, payload, nil, nil
 	}
 
