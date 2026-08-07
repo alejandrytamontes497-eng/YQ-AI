@@ -27,10 +27,12 @@ func (r *imageGenerationJobRepository) Create(ctx context.Context, job *service.
 	_, err = r.db.ExecContext(ctx, `
 		INSERT INTO image_generation_jobs (
 			id, user_id, status, model, prompt, size, quality, image_count,
-			request_body, results, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+			request_body, reference_image_file_name, reference_image_original_name,
+			reference_image_mime_type, results, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
 	`, job.ID, job.UserID, job.Status, job.Model, job.Prompt, job.Size, job.Quality,
-		job.ImageCount, []byte(job.RequestBody), results, job.CreatedAt)
+		job.ImageCount, []byte(job.RequestBody), job.ReferenceImageFileName,
+		job.ReferenceImageOriginalName, job.ReferenceImageMimeType, results, job.CreatedAt)
 	return err
 }
 
@@ -46,7 +48,8 @@ func (r *imageGenerationJobRepository) CountActiveForUser(ctx context.Context, u
 func (r *imageGenerationJobRepository) ListForUser(ctx context.Context, userID int64, limit int) ([]service.ImageGenerationJob, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, user_id, status, model, prompt, size, quality, image_count,
-			request_body, results, error_message, attempt_count,
+			request_body, reference_image_file_name, reference_image_original_name,
+			reference_image_mime_type, results, error_message, attempt_count,
 			started_at, finished_at, created_at, updated_at
 		FROM image_generation_jobs
 		WHERE user_id = $1
@@ -71,7 +74,8 @@ func (r *imageGenerationJobRepository) ListForUser(ctx context.Context, userID i
 func (r *imageGenerationJobRepository) GetForUser(ctx context.Context, userID int64, jobID string) (*service.ImageGenerationJob, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT id, user_id, status, model, prompt, size, quality, image_count,
-			request_body, results, error_message, attempt_count,
+			request_body, reference_image_file_name, reference_image_original_name,
+			reference_image_mime_type, results, error_message, attempt_count,
 			started_at, finished_at, created_at, updated_at
 		FROM image_generation_jobs
 		WHERE id = $1 AND user_id = $2
@@ -104,7 +108,9 @@ func (r *imageGenerationJobRepository) ClaimNext(ctx context.Context, staleAfter
 		FROM next
 		WHERE jobs.id = next.id
 		RETURNING jobs.id, jobs.user_id, jobs.status, jobs.model, jobs.prompt,
-			jobs.size, jobs.quality, jobs.image_count, jobs.request_body, jobs.results,
+			jobs.size, jobs.quality, jobs.image_count, jobs.request_body,
+			jobs.reference_image_file_name, jobs.reference_image_original_name,
+			jobs.reference_image_mime_type, jobs.results,
 			jobs.error_message, jobs.attempt_count, jobs.started_at, jobs.finished_at,
 			jobs.created_at, jobs.updated_at
 	`, service.ImageGenerationJobStatusPending, service.ImageGenerationJobStatusRunning, staleSeconds)
@@ -162,7 +168,9 @@ func scanImageGenerationJob(scanner imageGenerationJobScanner) (*service.ImageGe
 	var finishedAt sql.NullTime
 	if err := scanner.Scan(
 		&job.ID, &job.UserID, &job.Status, &job.Model, &job.Prompt,
-		&job.Size, &job.Quality, &job.ImageCount, &requestBody, &resultsJSON,
+		&job.Size, &job.Quality, &job.ImageCount, &requestBody,
+		&job.ReferenceImageFileName, &job.ReferenceImageOriginalName,
+		&job.ReferenceImageMimeType, &resultsJSON,
 		&errorMessage, &job.AttemptCount, &startedAt, &finishedAt,
 		&job.CreatedAt, &job.UpdatedAt,
 	); err != nil {

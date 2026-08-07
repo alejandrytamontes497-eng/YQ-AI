@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"os"
 	"strconv"
 	"strings"
@@ -21,7 +24,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const imageGenerationJobRequestMaxBytes = 1 << 20
+const (
+	imageGenerationJobJSONMaxBytes   = 1 << 20
+	imageGenerationReferenceMaxBytes = 20 << 20
+	imageGenerationMultipartMaxBytes = imageGenerationReferenceMaxBytes + imageGenerationJobJSONMaxBytes
+)
 
 type ImageGenerationJobHandler struct {
 	jobs                *service.ImageGenerationJobService
@@ -38,6 +45,13 @@ type imageGenerationJobRequest struct {
 	N       int    `json:"n"`
 }
 
+type imageGenerationJobRequestError struct {
+	statusCode int
+	message    string
+}
+
+func (e *imageGenerationJobRequestError) Error() string { return e.message }
+
 type imageGenerationJobResultResponse struct {
 	Index         int    `json:"index"`
 	URL           string `json:"url"`
@@ -47,20 +61,22 @@ type imageGenerationJobResultResponse struct {
 }
 
 type imageGenerationJobResponse struct {
-	ID           string                             `json:"id"`
-	Status       string                             `json:"status"`
-	Model        string                             `json:"model"`
-	Prompt       string                             `json:"prompt"`
-	Size         string                             `json:"size"`
-	Quality      string                             `json:"quality"`
-	ImageCount   int                                `json:"image_count"`
-	Results      []imageGenerationJobResultResponse `json:"results"`
-	ErrorMessage string                             `json:"error_message,omitempty"`
-	AttemptCount int                                `json:"attempt_count"`
-	StartedAt    *time.Time                         `json:"started_at,omitempty"`
-	FinishedAt   *time.Time                         `json:"finished_at,omitempty"`
-	CreatedAt    time.Time                          `json:"created_at"`
-	UpdatedAt    time.Time                          `json:"updated_at"`
+	ID                     string                             `json:"id"`
+	Status                 string                             `json:"status"`
+	Model                  string                             `json:"model"`
+	Prompt                 string                             `json:"prompt"`
+	Size                   string                             `json:"size"`
+	Quality                string                             `json:"quality"`
+	ImageCount             int                                `json:"image_count"`
+	ReferenceImageName     string                             `json:"reference_image_name,omitempty"`
+	ReferenceImageMimeType string                             `json:"reference_image_mime_type,omitempty"`
+	Results                []imageGenerationJobResultResponse `json:"results"`
+	ErrorMessage           string                             `json:"error_message,omitempty"`
+	AttemptCount           int                                `json:"attempt_count"`
+	StartedAt              *time.Time                         `json:"started_at,omitempty"`
+	FinishedAt             *time.Time                         `json:"finished_at,omitempty"`
+	CreatedAt              time.Time                          `json:"created_at"`
+	UpdatedAt              time.Time                          `json:"updated_at"`
 }
 
 func NewImageGenerationJobHandler(
@@ -85,20 +101,111 @@ func NewImageGenerationJobHandler(
 	return h, nil
 }
 
+func parseImageGenerationJobCreateRequest(c *gin.Context) (
+	imageGenerationJobRequest,
+	map[string]any,
+	*service.ImageGenerationReferenceImage,
+	error,
+) {
+	var request imageGenerationJobRequest
+	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
+	mediaType, params, _ := mime.ParseMediaType(contentType)
+	if !strings.EqualFold(mediaType, "multipart/form-data") {
+		body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, imageGenerationJobJSONMaxBytes))
+		if err != nil {
+			return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Invalid image generation request"}
+		}
+		var payload map[string]any
+		if len(body) == 0 || json.Unmarshal(body, &request) != nil || json.Unmarshal(body, &payload) != nil {
+			return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Invalid image generation request"}
+		}
+		return request, payload, nil, nil
+	}
+
+	boundary := strings.TrimSpace(params["boundary"])
+	if boundary == "" {
+		return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Invalid multipart image request"}
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, imageGenerationMultipartMaxBytes))
+	if err != nil {
+		return request, nil, nil, &imageGenerationJobRequestError{http.StatusRequestEntityTooLarge, "Reference image must be 20 MB or smaller"}
+	}
+	values := make(map[string]string)
+	var referenceImage *service.ImageGenerationReferenceImage
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Invalid multipart image request"}
+		}
+		name := strings.TrimSpace(part.FormName())
+		if part.FileName() != "" {
+			if name != "image" || referenceImage != nil {
+				_ = part.Close()
+				return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Upload exactly one reference image"}
+			}
+			data, readErr := io.ReadAll(io.LimitReader(part, imageGenerationReferenceMaxBytes+1))
+			_ = part.Close()
+			if readErr != nil || len(data) == 0 {
+				return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Reference image is empty"}
+			}
+			if len(data) > imageGenerationReferenceMaxBytes {
+				return request, nil, nil, &imageGenerationJobRequestError{http.StatusRequestEntityTooLarge, "Reference image must be 20 MB or smaller"}
+			}
+			detected := strings.ToLower(http.DetectContentType(data))
+			if detected != "image/png" && detected != "image/jpeg" && detected != "image/webp" {
+				return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Reference image must be PNG, JPEG, or WebP"}
+			}
+			referenceImage = &service.ImageGenerationReferenceImage{
+				OriginalName: part.FileName(),
+				MimeType:     detected,
+				Data:         data,
+			}
+			continue
+		}
+		data, readErr := io.ReadAll(io.LimitReader(part, imageGenerationJobJSONMaxBytes))
+		_ = part.Close()
+		if readErr != nil {
+			return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Invalid multipart image request"}
+		}
+		values[name] = string(data)
+	}
+	if referenceImage == nil {
+		return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Reference image is required for multipart requests"}
+	}
+	request.Model = values["model"]
+	request.Prompt = values["prompt"]
+	request.Size = values["size"]
+	request.Quality = values["quality"]
+	if rawN := strings.TrimSpace(values["n"]); rawN != "" {
+		request.N, err = strconv.Atoi(rawN)
+		if err != nil {
+			return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Image count must be a number"}
+		}
+	}
+	payload := map[string]any{
+		"model": request.Model, "prompt": request.Prompt, "size": request.Size,
+		"quality": request.Quality, "n": request.N,
+	}
+	return request, payload, referenceImage, nil
+}
+
 func (h *ImageGenerationJobHandler) Create(c *gin.Context) {
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		response.Unauthorized(c, "User not authenticated")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, imageGenerationJobRequestMaxBytes))
+	request, payload, referenceImage, err := parseImageGenerationJobCreateRequest(c)
 	if err != nil {
-		response.BadRequest(c, "Invalid image generation request")
-		return
-	}
-	var request imageGenerationJobRequest
-	var payload map[string]any
-	if len(body) == 0 || json.Unmarshal(body, &request) != nil || json.Unmarshal(body, &payload) != nil {
+		var requestErr *imageGenerationJobRequestError
+		if errors.As(err, &requestErr) {
+			response.Error(c, requestErr.statusCode, requestErr.message)
+			return
+		}
 		response.BadRequest(c, "Invalid image generation request")
 		return
 	}
@@ -145,13 +252,14 @@ func (h *ImageGenerationJobHandler) Create(c *gin.Context) {
 	}
 
 	job, err := h.jobs.Submit(c.Request.Context(), service.CreateImageGenerationJobInput{
-		UserID:      subject.UserID,
-		Model:       request.Model,
-		Prompt:      request.Prompt,
-		Size:        request.Size,
-		Quality:     request.Quality,
-		ImageCount:  request.N,
-		RequestBody: canonicalBody,
+		UserID:         subject.UserID,
+		Model:          request.Model,
+		Prompt:         request.Prompt,
+		Size:           request.Size,
+		Quality:        request.Quality,
+		ImageCount:     request.N,
+		RequestBody:    canonicalBody,
+		ReferenceImage: referenceImage,
 	})
 	if errors.Is(err, service.ErrTooManyImageGenerationJobs) {
 		response.Error(c, http.StatusTooManyRequests, err.Error())
@@ -316,13 +424,31 @@ func (h *ImageGenerationJobHandler) Image(c *gin.Context) {
 	http.ServeContent(c.Writer, c.Request, info.Name(), info.ModTime(), file)
 }
 
-func (h *ImageGenerationJobHandler) execute(ctx context.Context, userID int64, requestBody []byte) ([]byte, error) {
+func (h *ImageGenerationJobHandler) execute(ctx context.Context, job *service.ImageGenerationJob) ([]byte, error) {
+	if job == nil {
+		return nil, errors.New("image generation job is missing")
+	}
+	requestBody := []byte(job.RequestBody)
+	requestPath := "/api/v1/user/images/generations"
+	contentType := "application/json"
+	if job.ReferenceImageFileName != "" {
+		path, err := h.jobs.ReferenceImageFile(job)
+		if err != nil {
+			return nil, fmt.Errorf("load reference image: %w", err)
+		}
+		requestBody, contentType, err = buildImageEditMultipart(job, path)
+		if err != nil {
+			return nil, err
+		}
+		requestPath = "/api/v1/user/images/edits"
+	}
+
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/user/images/generations", bytes.NewReader(requestBody)).WithContext(ctx)
-	request.Header.Set("Content-Type", "application/json")
+	request := httptest.NewRequest(http.MethodPost, requestPath, bytes.NewReader(requestBody)).WithContext(ctx)
+	request.Header.Set("Content-Type", contentType)
 	c.Request = request
-	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: userID})
+	c.Set(string(middleware2.ContextKeyUser), middleware2.AuthSubject{UserID: job.UserID})
 
 	if !h.gateway.BindUserImageGenerationContext(c, h.subscriptionService) {
 		return nil, imageGenerationExecutionError(recorder)
@@ -332,6 +458,48 @@ func (h *ImageGenerationJobHandler) execute(ctx context.Context, userID int64, r
 		return nil, imageGenerationExecutionError(recorder)
 	}
 	return append([]byte(nil), recorder.Body.Bytes()...), nil
+}
+
+func buildImageEditMultipart(job *service.ImageGenerationJob, imagePath string) ([]byte, string, error) {
+	imageData, err := os.ReadFile(imagePath)
+	if err != nil {
+		return nil, "", fmt.Errorf("read reference image: %w", err)
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	fields := map[string]string{
+		"model":           job.Model,
+		"prompt":          job.Prompt,
+		"size":            job.Size,
+		"quality":         job.Quality,
+		"n":               strconv.Itoa(job.ImageCount),
+		"response_format": "b64_json",
+	}
+	for _, name := range []string{"model", "prompt", "size", "quality", "n", "response_format"} {
+		if err := writer.WriteField(name, fields[name]); err != nil {
+			return nil, "", fmt.Errorf("write image edit field: %w", err)
+		}
+	}
+	fileName := job.ReferenceImageOriginalName
+	if strings.TrimSpace(fileName) == "" {
+		fileName = "reference.png"
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{
+		"name": "image", "filename": fileName,
+	}))
+	header.Set("Content-Type", job.ReferenceImageMimeType)
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return nil, "", fmt.Errorf("create reference image part: %w", err)
+	}
+	if _, err := part.Write(imageData); err != nil {
+		return nil, "", fmt.Errorf("write reference image part: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("finalize image edit request: %w", err)
+	}
+	return body.Bytes(), writer.FormDataContentType(), nil
 }
 
 func imageGenerationExecutionError(recorder *httptest.ResponseRecorder) error {
@@ -371,19 +539,21 @@ func (h *ImageGenerationJobHandler) jobResponse(job service.ImageGenerationJob) 
 		})
 	}
 	return imageGenerationJobResponse{
-		ID:           job.ID,
-		Status:       job.Status,
-		Model:        job.Model,
-		Prompt:       job.Prompt,
-		Size:         job.Size,
-		Quality:      job.Quality,
-		ImageCount:   job.ImageCount,
-		Results:      results,
-		ErrorMessage: job.ErrorMessage,
-		AttemptCount: job.AttemptCount,
-		StartedAt:    job.StartedAt,
-		FinishedAt:   job.FinishedAt,
-		CreatedAt:    job.CreatedAt,
-		UpdatedAt:    job.UpdatedAt,
+		ID:                     job.ID,
+		Status:                 job.Status,
+		Model:                  job.Model,
+		Prompt:                 job.Prompt,
+		Size:                   job.Size,
+		Quality:                job.Quality,
+		ImageCount:             job.ImageCount,
+		ReferenceImageName:     job.ReferenceImageOriginalName,
+		ReferenceImageMimeType: job.ReferenceImageMimeType,
+		Results:                results,
+		ErrorMessage:           job.ErrorMessage,
+		AttemptCount:           job.AttemptCount,
+		StartedAt:              job.StartedAt,
+		FinishedAt:             job.FinishedAt,
+		CreatedAt:              job.CreatedAt,
+		UpdatedAt:              job.UpdatedAt,
 	}
 }

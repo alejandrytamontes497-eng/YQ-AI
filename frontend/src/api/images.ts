@@ -12,6 +12,7 @@ export interface ImageGenerationRequest {
   size: string
   quality: string
   n: number
+  referenceImage?: File
   signal?: AbortSignal
 }
 
@@ -33,6 +34,8 @@ export interface ImageGenerationJob {
   size: string
   quality: string
   image_count: number
+  reference_image_name?: string
+  reference_image_mime_type?: string
   results: ImageGenerationJobResult[]
   error_message?: string
   attempt_count: number
@@ -48,7 +51,7 @@ export async function listUserImageModels(signal?: AbortSignal): Promise<UserIma
 }
 
 export async function createImageJob(request: ImageGenerationRequest): Promise<ImageGenerationJob> {
-  const payload: Record<string, unknown> = {
+  const payload = {
     model: request.model,
     prompt: request.prompt,
     size: request.size,
@@ -56,7 +59,14 @@ export async function createImageJob(request: ImageGenerationRequest): Promise<I
     n: request.n,
     response_format: 'b64_json'
   }
-  const { data } = await apiClient.post<ImageGenerationJob>('/user/images/jobs', payload, {
+  let body: typeof payload | FormData = payload
+  if (request.referenceImage) {
+    const form = new FormData()
+    Object.entries(payload).forEach(([key, value]) => form.append(key, String(value)))
+    form.append('image', request.referenceImage, request.referenceImage.name)
+    body = form
+  }
+  const { data } = await apiClient.post<ImageGenerationJob>('/user/images/jobs', body, {
     signal: request.signal
   })
   return data

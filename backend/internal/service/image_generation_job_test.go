@@ -152,9 +152,9 @@ func TestImageGenerationJobServiceCompletesAndStoresImage(t *testing.T) {
 	}}
 	svc := NewImageGenerationJobService(repo, cfg)
 	png := []byte("\x89PNG\r\n\x1a\nimage-data")
-	svc.SetExecutor(func(_ context.Context, userID int64, requestBody []byte) ([]byte, error) {
-		require.Equal(t, int64(42), userID)
-		require.JSONEq(t, `{"model":"gpt-image-2"}`, string(requestBody))
+	svc.SetExecutor(func(_ context.Context, job *ImageGenerationJob) ([]byte, error) {
+		require.Equal(t, int64(42), job.UserID)
+		require.JSONEq(t, `{"model":"gpt-image-2"}`, string(job.RequestBody))
 		return json.Marshal(map[string]any{"data": []map[string]any{{
 			"b64_json":      base64.StdEncoding.EncodeToString(png),
 			"output_format": "png",
@@ -212,7 +212,7 @@ func TestImageGenerationJobServiceRequeuesRunningJobOnShutdown(t *testing.T) {
 		WorkerCount: 1, PollIntervalSeconds: 1, TaskTimeoutSeconds: 30, StoragePath: t.TempDir(),
 	}}
 	svc := NewImageGenerationJobService(repo, cfg)
-	svc.SetExecutor(func(ctx context.Context, _ int64, _ []byte) ([]byte, error) {
+	svc.SetExecutor(func(ctx context.Context, _ *ImageGenerationJob) ([]byte, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
@@ -231,4 +231,33 @@ func TestImageGenerationJobServiceRequeuesRunningJobOnShutdown(t *testing.T) {
 	current, err := svc.GetForUser(context.Background(), 9, job.ID)
 	require.NoError(t, err)
 	require.Equal(t, ImageGenerationJobStatusPending, current.Status)
+}
+
+func TestImageGenerationJobServiceStoresReferenceImage(t *testing.T) {
+	repo := newMemoryImageGenerationJobRepository()
+	storagePath := t.TempDir()
+	svc := NewImageGenerationJobService(repo, &config.Config{ImageGenerationJobs: config.ImageGenerationJobsConfig{
+		MaxQueuedPerUser: 2,
+		StoragePath:      storagePath,
+	}})
+	imageData := []byte("\x89PNG\r\n\x1a\nreference-data")
+	job, err := svc.Submit(context.Background(), CreateImageGenerationJobInput{
+		UserID: 12, Model: "gpt-image-2", Prompt: "use this style", Size: "1024x1024", Quality: "low", ImageCount: 1,
+		RequestBody: json.RawMessage(`{"model":"gpt-image-2"}`),
+		ReferenceImage: &ImageGenerationReferenceImage{
+			OriginalName: "sample.png",
+			MimeType:     "image/png",
+			Data:         imageData,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "sample.png", job.ReferenceImageOriginalName)
+	require.Equal(t, "image/png", job.ReferenceImageMimeType)
+	require.Equal(t, "reference.png", job.ReferenceImageFileName)
+
+	path, err := svc.ReferenceImageFile(job)
+	require.NoError(t, err)
+	stored, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, imageData, stored)
 }

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"sort"
 	"strconv"
@@ -1275,12 +1277,11 @@ func (h *GatewayHandler) BindUserImageGenerationContext(c *gin.Context, subscrip
 	}
 	c.Request.Body = io.NopCloser(bytes.NewReader(body))
 
-	var req userImageGenerationRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	model, err := userImageGenerationModel(c.GetHeader("Content-Type"), body)
+	if err != nil {
 		response.BadRequest(c, "Invalid image generation request")
 		return false
 	}
-	model := strings.TrimSpace(req.Model)
 	if !service.IsOpenAIImageGenerationModel(model) {
 		response.BadRequest(c, "Images endpoint requires an image model")
 		return false
@@ -1306,6 +1307,41 @@ func (h *GatewayHandler) BindUserImageGenerationContext(c *gin.Context, subscrip
 	c.Set(string(middleware2.ContextKeyUserRole), apiKey.User.Role)
 	_ = h.apiKeyService.TouchLastUsed(c.Request.Context(), apiKey.ID)
 	return true
+}
+
+func userImageGenerationModel(contentType string, body []byte) (string, error) {
+	mediaType, params, _ := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if !strings.EqualFold(mediaType, "multipart/form-data") {
+		var req userImageGenerationRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(req.Model), nil
+	}
+	boundary := strings.TrimSpace(params["boundary"])
+	if boundary == "" {
+		return "", errors.New("multipart boundary is required")
+	}
+	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		if part.FileName() == "" && part.FormName() == "model" {
+			value, readErr := io.ReadAll(io.LimitReader(part, 1024))
+			_ = part.Close()
+			if readErr != nil {
+				return "", readErr
+			}
+			return strings.TrimSpace(string(value)), nil
+		}
+		_ = part.Close()
+	}
+	return "", errors.New("image model is required")
 }
 
 func (h *GatewayHandler) selectUserImageGenerationAPIKey(

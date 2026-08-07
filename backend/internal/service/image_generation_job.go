@@ -37,32 +37,42 @@ type ImageGenerationJobResult struct {
 }
 
 type ImageGenerationJob struct {
-	ID           string                     `json:"id"`
-	UserID       int64                      `json:"user_id"`
-	Status       string                     `json:"status"`
-	Model        string                     `json:"model"`
-	Prompt       string                     `json:"prompt"`
-	Size         string                     `json:"size"`
-	Quality      string                     `json:"quality"`
-	ImageCount   int                        `json:"image_count"`
-	RequestBody  json.RawMessage            `json:"-"`
-	Results      []ImageGenerationJobResult `json:"results"`
-	ErrorMessage string                     `json:"error_message,omitempty"`
-	AttemptCount int                        `json:"attempt_count"`
-	StartedAt    *time.Time                 `json:"started_at,omitempty"`
-	FinishedAt   *time.Time                 `json:"finished_at,omitempty"`
-	CreatedAt    time.Time                  `json:"created_at"`
-	UpdatedAt    time.Time                  `json:"updated_at"`
+	ID                         string                     `json:"id"`
+	UserID                     int64                      `json:"user_id"`
+	Status                     string                     `json:"status"`
+	Model                      string                     `json:"model"`
+	Prompt                     string                     `json:"prompt"`
+	Size                       string                     `json:"size"`
+	Quality                    string                     `json:"quality"`
+	ImageCount                 int                        `json:"image_count"`
+	RequestBody                json.RawMessage            `json:"-"`
+	ReferenceImageFileName     string                     `json:"-"`
+	ReferenceImageOriginalName string                     `json:"reference_image_name,omitempty"`
+	ReferenceImageMimeType     string                     `json:"reference_image_mime_type,omitempty"`
+	Results                    []ImageGenerationJobResult `json:"results"`
+	ErrorMessage               string                     `json:"error_message,omitempty"`
+	AttemptCount               int                        `json:"attempt_count"`
+	StartedAt                  *time.Time                 `json:"started_at,omitempty"`
+	FinishedAt                 *time.Time                 `json:"finished_at,omitempty"`
+	CreatedAt                  time.Time                  `json:"created_at"`
+	UpdatedAt                  time.Time                  `json:"updated_at"`
 }
 
 type CreateImageGenerationJobInput struct {
-	UserID      int64
-	Model       string
-	Prompt      string
-	Size        string
-	Quality     string
-	ImageCount  int
-	RequestBody json.RawMessage
+	UserID         int64
+	Model          string
+	Prompt         string
+	Size           string
+	Quality        string
+	ImageCount     int
+	RequestBody    json.RawMessage
+	ReferenceImage *ImageGenerationReferenceImage
+}
+
+type ImageGenerationReferenceImage struct {
+	OriginalName string
+	MimeType     string
+	Data         []byte
 }
 
 type ImageGenerationJobRepository interface {
@@ -76,7 +86,7 @@ type ImageGenerationJobRepository interface {
 	MarkFailed(ctx context.Context, jobID string, message string) error
 }
 
-type ImageGenerationJobExecutor func(ctx context.Context, userID int64, requestBody []byte) ([]byte, error)
+type ImageGenerationJobExecutor func(ctx context.Context, job *ImageGenerationJob) ([]byte, error)
 
 type ImageGenerationJobEvent struct {
 	Job ImageGenerationJob `json:"job"`
@@ -176,7 +186,15 @@ func (s *ImageGenerationJobService) Submit(ctx context.Context, input CreateImag
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+	if input.ReferenceImage != nil {
+		if err := s.storeReferenceImage(job, input.ReferenceImage); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.repo.Create(ctx, job); err != nil {
+		if job.ReferenceImageFileName != "" {
+			_ = os.RemoveAll(filepath.Join(s.storageDir(), fmt.Sprintf("%d", job.UserID), job.ID))
+		}
 		return nil, err
 	}
 	s.publish(*job)
@@ -274,7 +292,7 @@ func (s *ImageGenerationJobService) execute(job *ImageGenerationJob) {
 
 	ctx, cancel := context.WithTimeout(s.ctx, s.taskTimeout())
 	defer cancel()
-	body, err := executor(ctx, job.UserID, job.RequestBody)
+	body, err := executor(ctx, job)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) && errors.Is(s.ctx.Err(), context.Canceled) {
 			_ = s.repo.Requeue(context.Background(), job.ID)
@@ -294,6 +312,64 @@ func (s *ImageGenerationJobService) execute(job *ImageGenerationJob) {
 	if completed, err := s.repo.GetForUser(context.Background(), job.UserID, job.ID); err == nil && completed != nil {
 		s.publish(*completed)
 	}
+}
+
+func (s *ImageGenerationJobService) ReferenceImageFile(job *ImageGenerationJob) (string, error) {
+	if job == nil || strings.TrimSpace(job.ReferenceImageFileName) == "" {
+		return "", os.ErrNotExist
+	}
+	path := filepath.Join(s.storageDir(), fmt.Sprintf("%d", job.UserID), job.ID, filepath.Base(job.ReferenceImageFileName))
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func (s *ImageGenerationJobService) storeReferenceImage(job *ImageGenerationJob, image *ImageGenerationReferenceImage) error {
+	if job == nil || image == nil || len(image.Data) == 0 {
+		return errors.New("reference image is empty")
+	}
+	if len(image.Data) > 20<<20 {
+		return errors.New("reference image exceeds 20 MB")
+	}
+	mimeType := strings.ToLower(strings.TrimSpace(image.MimeType))
+	detected := strings.ToLower(strings.TrimSpace(http.DetectContentType(image.Data)))
+	if detected != "image/png" && detected != "image/jpeg" && detected != "image/webp" {
+		return errors.New("reference image must be PNG, JPEG, or WebP")
+	}
+	if mimeType == "" || !strings.HasPrefix(mimeType, "image/") {
+		mimeType = detected
+	}
+	extension := "png"
+	switch detected {
+	case "image/jpeg":
+		extension = "jpg"
+	case "image/webp":
+		extension = "webp"
+	}
+	dir := filepath.Join(s.storageDir(), fmt.Sprintf("%d", job.UserID), job.ID)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create reference image directory: %w", err)
+	}
+	fileName := "reference." + extension
+	if err := writeFileAtomic(filepath.Join(dir, fileName), image.Data); err != nil {
+		return fmt.Errorf("store reference image: %w", err)
+	}
+	job.ReferenceImageFileName = fileName
+	job.ReferenceImageOriginalName = sanitizeReferenceImageName(image.OriginalName, fileName)
+	job.ReferenceImageMimeType = detected
+	return nil
+}
+
+func sanitizeReferenceImageName(value string, fallback string) string {
+	value = filepath.Base(strings.TrimSpace(value))
+	if value == "" || value == "." {
+		return fallback
+	}
+	if len(value) > 255 {
+		value = value[:255]
+	}
+	return value
 }
 
 func (s *ImageGenerationJobService) finishFailed(job *ImageGenerationJob, message string) {

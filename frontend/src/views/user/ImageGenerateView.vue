@@ -24,6 +24,38 @@
           :disabled="submitting"
         ></textarea>
 
+        <div class="reference-field">
+          <label class="field-label">{{ t('imageGenerate.referenceImage') }}</label>
+          <input
+            id="reference-image-input"
+            ref="referenceImageInput"
+            class="sr-only"
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            :disabled="submitting"
+            @change="selectReferenceImage"
+          />
+          <div v-if="referenceImage && referenceImagePreview" class="reference-preview">
+            <img :src="referenceImagePreview" :alt="t('imageGenerate.referenceImagePreview')" />
+            <div class="reference-details">
+              <p>{{ referenceImage.name }}</p>
+              <span>{{ formatFileSize(referenceImage.size) }}</span>
+            </div>
+            <label class="reference-action" for="reference-image-input">
+              <Icon name="upload" size="xs" :stroke-width="2" />
+              <span>{{ t('imageGenerate.replaceReference') }}</span>
+            </label>
+            <button class="reference-remove" type="button" :title="t('imageGenerate.removeReference')" :disabled="submitting" @click="removeReferenceImage">
+              <Icon name="x" size="sm" :stroke-width="2" />
+            </button>
+          </div>
+          <label v-else class="reference-empty" for="reference-image-input">
+            <Icon name="upload" size="sm" :stroke-width="2" />
+            <span>{{ t('imageGenerate.uploadReference') }}</span>
+            <small>{{ t('imageGenerate.referenceHint') }}</small>
+          </label>
+        </div>
+
         <div class="settings-grid">
           <div>
             <label class="field-label">{{ t('imageGenerate.model') }}</label>
@@ -68,6 +100,22 @@
           </button>
         </div>
 
+        <div v-if="submitting" class="async-status" role="status" aria-live="polite">
+          <span class="spinner large"></span>
+          <div>
+            <p>{{ t('imageGenerate.creatingJob') }}</p>
+            <span>{{ t('imageGenerate.creatingJobHint') }}</span>
+          </div>
+        </div>
+
+        <div v-else-if="hydratingCount > 0" class="async-status" role="status" aria-live="polite">
+          <span class="spinner large"></span>
+          <div>
+            <p>{{ t('imageGenerate.loadingResult') }}</p>
+            <span>{{ t('imageGenerate.loadingResultHint') }}</span>
+          </div>
+        </div>
+
         <div v-if="activeJobs.length" class="job-list">
           <article v-for="job in activeJobs" :key="job.id" class="job-item">
             <span class="spinner large"></span>
@@ -81,7 +129,7 @@
           </article>
         </div>
 
-        <div v-if="gallery.length === 0 && activeJobs.length === 0" class="empty-state">
+        <div v-if="gallery.length === 0 && activeJobs.length === 0 && !submitting && hydratingCount === 0" class="empty-state">
           <Icon name="grid" size="xl" class="text-gray-400" />
           <p>{{ t('imageGenerate.empty') }}</p>
         </div>
@@ -173,11 +221,15 @@ const selectedSize = ref('1024x1024')
 const selectedQuality = ref('auto')
 const selectedCount = ref(1)
 const prompt = ref('')
+const referenceImage = ref<File | null>(null)
+const referenceImagePreview = ref('')
+const referenceImageInput = ref<HTMLInputElement | null>(null)
 const loading = ref(false)
 const submitting = ref(false)
 const errorMessage = ref('')
 const gallery = ref<GalleryItem[]>([])
 const jobs = ref<ImageGenerationJob[]>([])
+const hydratingCount = ref(0)
 const copiedId = ref('')
 let abortController: AbortController | null = null
 let copyFeedbackTimer: number | null = null
@@ -196,6 +248,8 @@ const IMAGE_DB_NAME = 'image_generation_gallery'
 const IMAGE_DB_VERSION = 1
 const IMAGE_STORE_NAME = 'images'
 const ERROR_MESSAGE_MAX_LENGTH = 360
+const REFERENCE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+const REFERENCE_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
 
 const sizeOptions: SelectOption[] = [
   { value: '1024x1024', label: '1:1 · 1024x1024 · 方图' },
@@ -251,6 +305,7 @@ onBeforeUnmount(() => {
   if (copyFeedbackTimer !== null) {
     window.clearTimeout(copyFeedbackTimer)
   }
+  revokeReferenceImagePreview()
   revokeAllObjectUrls()
 })
 
@@ -309,6 +364,44 @@ function optimizePrompt() {
   prompt.value = `${text}，清晰主视觉，真实材质，高级棚拍光线，细节丰富，构图干净，避免文字水印和畸形元素`
 }
 
+function selectReferenceImage(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  if (!REFERENCE_IMAGE_TYPES.has(file.type)) {
+    errorMessage.value = t('imageGenerate.referenceTypeError')
+    input.value = ''
+    return
+  }
+  if (file.size > REFERENCE_IMAGE_MAX_BYTES) {
+    errorMessage.value = t('imageGenerate.referenceSizeError')
+    input.value = ''
+    return
+  }
+  revokeReferenceImagePreview()
+  referenceImage.value = file
+  referenceImagePreview.value = URL.createObjectURL(file)
+  errorMessage.value = ''
+}
+
+function removeReferenceImage() {
+  revokeReferenceImagePreview()
+  referenceImage.value = null
+  if (referenceImageInput.value) referenceImageInput.value.value = ''
+}
+
+function revokeReferenceImagePreview() {
+  if (!referenceImagePreview.value) return
+  URL.revokeObjectURL(referenceImagePreview.value)
+  referenceImagePreview.value = ''
+}
+
+function formatFileSize(bytes: number): string {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`
+}
+
 async function generate() {
   if (submitting.value) return
 
@@ -331,6 +424,7 @@ async function generate() {
       size: String(selectedSize.value),
       quality: String(selectedQuality.value),
       n: Number(selectedCount.value),
+      referenceImage: referenceImage.value ?? undefined,
       signal: abortController.signal
     })
     upsertJob(job)
@@ -405,6 +499,7 @@ async function hydrateCompletedJob(job: ImageGenerationJob) {
   if (missingResults.length === 0) return
 
   hydratingJobIDs.add(job.id)
+  hydratingCount.value += 1
   try {
     const items: GalleryItem[] = []
     for (const result of missingResults) {
@@ -443,6 +538,7 @@ async function hydrateCompletedJob(job: ImageGenerationJob) {
     }
     errorMessage.value = imageGenerationErrorMessage(error, t('imageGenerate.resultLoadFailed'))
   } finally {
+    hydratingCount.value = Math.max(0, hydratingCount.value - 1)
     hydratingJobIDs.delete(job.id)
   }
 }
@@ -929,6 +1025,46 @@ function isImageToolMetaErrorMessage(message: string): boolean {
   @apply min-h-[300px] w-full resize-y rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm leading-6 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20;
 }
 
+.reference-field {
+  @apply mt-4;
+}
+
+.reference-empty {
+  @apply flex min-h-[92px] cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 text-sm font-medium text-slate-700 transition hover:border-primary-400 hover:bg-primary-50 hover:text-primary-700;
+}
+
+.reference-empty small {
+  @apply text-xs font-normal text-slate-500;
+}
+
+.reference-preview {
+  @apply relative flex min-h-[92px] items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 pr-11;
+}
+
+.reference-preview img {
+  @apply h-16 w-16 shrink-0 rounded-md border border-slate-200 bg-white object-cover;
+}
+
+.reference-details {
+  @apply min-w-0 flex-1;
+}
+
+.reference-details p {
+  @apply truncate text-sm font-medium text-slate-900;
+}
+
+.reference-details span {
+  @apply mt-1 block text-xs text-slate-500;
+}
+
+.reference-action {
+  @apply inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition hover:border-primary-400 hover:text-primary-700;
+}
+
+.reference-remove {
+  @apply absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md text-slate-500 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50;
+}
+
 .settings-grid {
   @apply mt-4 grid grid-cols-1 gap-3 md:grid-cols-4;
 }
@@ -972,6 +1108,22 @@ function isImageToolMetaErrorMessage(message: string): boolean {
 
 .empty-state {
   @apply flex min-h-[220px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-slate-300 bg-white text-sm text-slate-500;
+}
+
+.async-status {
+  @apply mb-4 flex min-h-[76px] items-center gap-4 rounded-lg border border-primary-200 bg-primary-50 px-4 py-3 text-primary-900;
+}
+
+.async-status .spinner.large {
+  @apply h-6 w-6 shrink-0;
+}
+
+.async-status p {
+  @apply text-sm font-semibold;
+}
+
+.async-status span:not(.spinner) {
+  @apply mt-1 block text-xs text-primary-700;
 }
 
 .job-list {
@@ -1040,5 +1192,20 @@ function isImageToolMetaErrorMessage(message: string): boolean {
 
 .spinner.large {
   @apply h-7 w-7 border-slate-300 border-t-primary-500;
+}
+
+@media (max-width: 640px) {
+  .reference-preview {
+    @apply flex-wrap;
+  }
+
+  .reference-details {
+    @apply min-w-0;
+    flex-basis: calc(100% - 5rem);
+  }
+
+  .reference-action {
+    @apply ml-[4.75rem];
+  }
 }
 </style>
