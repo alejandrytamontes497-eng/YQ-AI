@@ -185,6 +185,7 @@ let imageDBPromise: Promise<IDBDatabase> | null = null
 const originalBlobs = new Map<string, Blob>()
 const objectUrls = new Set<string>()
 const hydratingJobIDs = new Set<string>()
+const processedJobResultIDs = new Set<string>()
 const notifiedFailedJobIDs = new Set<string>()
 const dismissedImageIDs = new Set<string>()
 let unsubscribeImageJobs: (() => void) | null = null
@@ -391,7 +392,15 @@ async function handleTerminalJob(job: ImageGenerationJob) {
 async function hydrateCompletedJob(job: ImageGenerationJob) {
   const missingResults = job.results.filter((result) => {
     const id = jobImageID(job.id, result.index)
-    return !dismissedImageIDs.has(id) && !gallery.value.some((item) => item.id === id)
+    if (
+      processedJobResultIDs.has(id) ||
+      dismissedImageIDs.has(id) ||
+      gallery.value.some((item) => item.id === id)
+    ) {
+      return false
+    }
+    processedJobResultIDs.add(id)
+    return true
   })
   if (missingResults.length === 0) return
 
@@ -428,6 +437,10 @@ async function hydrateCompletedJob(job: ImageGenerationJob) {
       appStore.showSuccess(t('imageGenerate.generateSuccess', { count: items.length }))
     }
   } catch (error) {
+    for (const result of missingResults) {
+      const id = jobImageID(job.id, result.index)
+      if (!gallery.value.some((item) => item.id === id)) processedJobResultIDs.delete(id)
+    }
     errorMessage.value = imageGenerationErrorMessage(error, t('imageGenerate.resultLoadFailed'))
   } finally {
     hydratingJobIDs.delete(job.id)
@@ -662,6 +675,7 @@ async function loadGallery() {
     for (const item of parsed.slice(0, 24)) {
       const restored = await restoreGalleryItem(item)
       if (restored) {
+        processedJobResultIDs.add(restored.id)
         hydrated.push(restored)
       }
     }

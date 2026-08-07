@@ -229,18 +229,27 @@ func (h *ImageGenerationJobHandler) Events(c *gin.Context) {
 		flusher.Flush()
 		return true
 	}
-	writeSnapshot := func() bool {
+	lastSnapshotVersion := ""
+	writeSnapshot := func(force bool) bool {
 		jobs, err := h.jobs.ListForUser(c.Request.Context(), subject.UserID, 24)
 		if err != nil {
 			return true
 		}
+		var version strings.Builder
+		for _, job := range jobs {
+			fmt.Fprintf(&version, "%s:%s:%d;", job.ID, job.Status, job.UpdatedAt.UnixNano())
+		}
+		if !force && version.String() == lastSnapshotVersion {
+			return true
+		}
+		lastSnapshotVersion = version.String()
 		items := make([]imageGenerationJobResponse, 0, len(jobs))
 		for _, job := range jobs {
 			items = append(items, h.jobResponse(job))
 		}
 		return writeEvent("snapshot", items)
 	}
-	if !writeSnapshot() {
+	if !writeSnapshot(true) {
 		return
 	}
 
@@ -259,7 +268,7 @@ func (h *ImageGenerationJobHandler) Events(c *gin.Context) {
 				return
 			}
 		case <-reconcileTicker.C:
-			if !writeSnapshot() {
+			if !writeSnapshot(false) {
 				return
 			}
 		case <-heartbeatTicker.C:
