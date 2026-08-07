@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"mime"
 	"mime/multipart"
 	"net/http"
 	"sort"
@@ -1310,17 +1309,13 @@ func (h *GatewayHandler) BindUserImageGenerationContext(c *gin.Context, subscrip
 }
 
 func userImageGenerationModel(contentType string, body []byte) (string, error) {
-	mediaType, params, _ := mime.ParseMediaType(strings.TrimSpace(contentType))
-	if !strings.EqualFold(mediaType, "multipart/form-data") {
+	boundary, isMultipart := imageGenerationMultipartBoundary(contentType, body)
+	if !isMultipart {
 		var req userImageGenerationRequest
 		if err := json.Unmarshal(body, &req); err != nil {
 			return "", err
 		}
 		return strings.TrimSpace(req.Model), nil
-	}
-	boundary := strings.TrimSpace(params["boundary"])
-	if boundary == "" {
-		return "", errors.New("multipart boundary is required")
 	}
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	for {

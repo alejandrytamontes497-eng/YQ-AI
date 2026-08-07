@@ -108,12 +108,15 @@ func parseImageGenerationJobCreateRequest(c *gin.Context) (
 	error,
 ) {
 	var request imageGenerationJobRequest
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, imageGenerationMultipartMaxBytes))
+	if err != nil {
+		return request, nil, nil, &imageGenerationJobRequestError{http.StatusRequestEntityTooLarge, "Image generation request is too large"}
+	}
 	contentType := strings.TrimSpace(c.GetHeader("Content-Type"))
-	mediaType, params, _ := mime.ParseMediaType(contentType)
-	if !strings.EqualFold(mediaType, "multipart/form-data") {
-		body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, imageGenerationJobJSONMaxBytes))
-		if err != nil {
-			return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Invalid image generation request"}
+	boundary, isMultipart := imageGenerationMultipartBoundary(contentType, body)
+	if !isMultipart {
+		if len(body) > imageGenerationJobJSONMaxBytes {
+			return request, nil, nil, &imageGenerationJobRequestError{http.StatusRequestEntityTooLarge, "Image generation request is too large"}
 		}
 		var payload map[string]any
 		if len(body) == 0 || json.Unmarshal(body, &request) != nil || json.Unmarshal(body, &payload) != nil {
@@ -122,14 +125,6 @@ func parseImageGenerationJobCreateRequest(c *gin.Context) (
 		return request, payload, nil, nil
 	}
 
-	boundary := strings.TrimSpace(params["boundary"])
-	if boundary == "" {
-		return request, nil, nil, &imageGenerationJobRequestError{http.StatusBadRequest, "Invalid multipart image request"}
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, imageGenerationMultipartMaxBytes))
-	if err != nil {
-		return request, nil, nil, &imageGenerationJobRequestError{http.StatusRequestEntityTooLarge, "Reference image must be 20 MB or smaller"}
-	}
 	values := make(map[string]string)
 	var referenceImage *service.ImageGenerationReferenceImage
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
@@ -191,6 +186,27 @@ func parseImageGenerationJobCreateRequest(c *gin.Context) (
 		"quality": request.Quality, "n": request.N,
 	}
 	return request, payload, referenceImage, nil
+}
+
+func imageGenerationMultipartBoundary(contentType string, body []byte) (string, bool) {
+	mediaType, params, _ := mime.ParseMediaType(strings.TrimSpace(contentType))
+	if strings.EqualFold(mediaType, "multipart/form-data") {
+		if boundary := strings.TrimSpace(params["boundary"]); boundary != "" {
+			return boundary, true
+		}
+	}
+	if !bytes.HasPrefix(body, []byte("--")) {
+		return "", false
+	}
+	lineEnd := bytes.Index(body, []byte("\r\n"))
+	if lineEnd <= 2 || lineEnd > 202 {
+		return "", false
+	}
+	boundary := strings.TrimSpace(string(body[2:lineEnd]))
+	if boundary == "" || strings.ContainsAny(boundary, "\r\n") {
+		return "", false
+	}
+	return boundary, true
 }
 
 func (h *ImageGenerationJobHandler) Create(c *gin.Context) {

@@ -67,7 +67,8 @@ export async function createImageJob(request: ImageGenerationRequest): Promise<I
     body = form
   }
   const { data } = await apiClient.post<ImageGenerationJob>('/user/images/jobs', body, {
-    signal: request.signal
+    signal: request.signal,
+    headers: request.referenceImage ? { 'Content-Type': undefined } : undefined
   })
   return data
 }

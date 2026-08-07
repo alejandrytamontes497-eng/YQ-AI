@@ -14,21 +14,29 @@ import (
 )
 
 func TestParseImageGenerationJobCreateRequestMultipart(t *testing.T) {
-	body, contentType := imageGenerationJobTestMultipart(t)
-	recorder := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/user/images/jobs", bytes.NewReader(body))
-	c.Request.Header.Set("Content-Type", contentType)
+	body, multipartContentType := imageGenerationJobTestMultipart(t)
+	for _, contentType := range []string{multipartContentType, "application/json"} {
+		t.Run(contentType, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/user/images/jobs", bytes.NewReader(body))
+			c.Request.Header.Set("Content-Type", contentType)
 
-	request, payload, reference, err := parseImageGenerationJobCreateRequest(c)
-	require.NoError(t, err)
-	require.Equal(t, "gpt-image-2", request.Model)
-	require.Equal(t, "follow this composition", request.Prompt)
-	require.Equal(t, 1, request.N)
-	require.Equal(t, "gpt-image-2", payload["model"])
-	require.NotNil(t, reference)
-	require.Equal(t, "reference.png", reference.OriginalName)
-	require.Equal(t, "image/png", reference.MimeType)
+			request, payload, reference, err := parseImageGenerationJobCreateRequest(c)
+			require.NoError(t, err)
+			require.Equal(t, "gpt-image-2", request.Model)
+			require.Equal(t, "follow this composition", request.Prompt)
+			require.Equal(t, 1, request.N)
+			require.Equal(t, "gpt-image-2", payload["model"])
+			require.NotNil(t, reference)
+			require.Equal(t, "reference.png", reference.OriginalName)
+			require.Equal(t, "image/png", reference.MimeType)
+
+			model, err := userImageGenerationModel(contentType, body)
+			require.NoError(t, err)
+			require.Equal(t, "gpt-image-2", model)
+		})
+	}
 }
 
 func TestBuildImageEditMultipart(t *testing.T) {
