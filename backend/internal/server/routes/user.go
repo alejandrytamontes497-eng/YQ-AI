@@ -36,6 +36,11 @@ func RegisterUserRoutes(
 			user.GET("/platform-quotas", h.User.GetMyPlatformQuotas)
 			user.GET("/chat/models", h.Gateway.UserChatModels)
 			user.GET("/images/models", h.Gateway.UserImageModels)
+			user.POST("/images/jobs", h.ImageJobs.Create)
+			user.GET("/images/jobs", h.ImageJobs.List)
+			user.GET("/images/jobs/events", h.ImageJobs.Events)
+			user.GET("/images/jobs/:id", h.ImageJobs.Get)
+			user.GET("/images/jobs/:id/images/:index", h.ImageJobs.Image)
 			user.POST("/images/generations", func(c *gin.Context) {
 				if !h.Gateway.BindUserImageGenerationContext(c, subscriptionService) {
 					return

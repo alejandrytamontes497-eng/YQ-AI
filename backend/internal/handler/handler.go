@@ -52,6 +52,7 @@ type Handlers struct {
 	Admin            *AdminHandlers
 	Gateway          *GatewayHandler
 	OpenAIGateway    *OpenAIGatewayHandler
+	ImageJobs        *ImageGenerationJobHandler
 	Setting          *SettingHandler
 	Totp             *TotpHandler
 	AvailableChannel *AvailableChannelHandler

@@ -86,6 +86,7 @@ type Config struct {
 	Dashboard               DashboardCacheConfig          `mapstructure:"dashboard_cache"`
 	DashboardAgg            DashboardAggregationConfig    `mapstructure:"dashboard_aggregation"`
 	UsageCleanup            UsageCleanupConfig            `mapstructure:"usage_cleanup"`
+	ImageGenerationJobs     ImageGenerationJobsConfig     `mapstructure:"image_generation_jobs"`
 	Concurrency             ConcurrencyConfig             `mapstructure:"concurrency"`
 	TokenRefresh            TokenRefreshConfig            `mapstructure:"token_refresh"`
 	RunMode                 string                        `mapstructure:"run_mode" yaml:"run_mode"`
@@ -681,6 +682,16 @@ type ImageConcurrencyConfig struct {
 	WaitTimeoutSeconds int `mapstructure:"wait_timeout_seconds"`
 	// MaxWaitingRequests: overflow_mode=wait 时当前进程允许排队等待的图片请求数
 	MaxWaitingRequests int `mapstructure:"max_waiting_requests"`
+}
+
+// ImageGenerationJobsConfig controls the durable user image-generation queue.
+type ImageGenerationJobsConfig struct {
+	WorkerCount         int    `mapstructure:"worker_count"`
+	MaxQueuedPerUser    int    `mapstructure:"max_queued_per_user"`
+	PollIntervalSeconds int    `mapstructure:"poll_interval_seconds"`
+	TaskTimeoutSeconds  int    `mapstructure:"task_timeout_seconds"`
+	StoragePath         string `mapstructure:"storage_path"`
+	MaxImageBytes       int64  `mapstructure:"max_image_bytes"`
 }
 
 const (
@@ -1897,6 +1908,12 @@ func setDefaults() {
 	viper.SetDefault("gateway.image_concurrency.overflow_mode", ImageConcurrencyOverflowModeReject)
 	viper.SetDefault("gateway.image_concurrency.wait_timeout_seconds", 30)
 	viper.SetDefault("gateway.image_concurrency.max_waiting_requests", 100)
+	viper.SetDefault("image_generation_jobs.worker_count", 2)
+	viper.SetDefault("image_generation_jobs.max_queued_per_user", 10)
+	viper.SetDefault("image_generation_jobs.poll_interval_seconds", 1)
+	viper.SetDefault("image_generation_jobs.task_timeout_seconds", 300)
+	viper.SetDefault("image_generation_jobs.storage_path", "")
+	viper.SetDefault("image_generation_jobs.max_image_bytes", int64(64<<20))
 	viper.SetDefault("gateway.antigravity_fallback_cooldown_minutes", 1)
 	viper.SetDefault("gateway.antigravity_extra_retries", 10)
 	viper.SetDefault("gateway.max_body_size", int64(256*1024*1024))

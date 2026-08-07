@@ -637,6 +637,18 @@ token_refresh:
   # 是否允许 OpenAI 刷新流程同步覆盖 linked_openai_account_id 关联的 Sora 账号 token
   sync_linked_sora_accounts: false
 
+# Durable asynchronous image-generation queue
+# 持久化异步生图任务队列
+image_generation_jobs:
+  worker_count: 2
+  max_queued_per_user: 10
+  poll_interval_seconds: 1
+  task_timeout_seconds: 300
+  # Empty uses /app/data/image-jobs in Docker, or ./data/image-jobs otherwise.
+  # 留空时 Docker 使用 /app/data/image-jobs，其他环境使用 ./data/image-jobs。
+  storage_path: ""
+  max_image_bytes: 67108864
+
 # =============================================================================
 # API Key Auth Cache Configuration
 # API Key 认证缓存配置

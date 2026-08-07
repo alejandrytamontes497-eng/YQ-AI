@@ -21,25 +21,25 @@
           v-model="prompt"
           class="prompt-input"
           :placeholder="t('imageGenerate.promptPlaceholder')"
-          :disabled="generating"
+          :disabled="submitting"
         ></textarea>
 
         <div class="settings-grid">
           <div>
             <label class="field-label">{{ t('imageGenerate.model') }}</label>
-            <Select v-model="selectedModel" :options="modelOptions" :placeholder="modelPlaceholder" :disabled="loading || generating" />
+            <Select v-model="selectedModel" :options="modelOptions" :placeholder="modelPlaceholder" :disabled="loading || submitting" />
           </div>
           <div>
             <label class="field-label">{{ t('imageGenerate.size') }}</label>
-            <Select v-model="selectedSize" :options="sizeOptions" :disabled="generating" />
+            <Select v-model="selectedSize" :options="sizeOptions" :disabled="submitting" />
           </div>
           <div>
             <label class="field-label">{{ t('imageGenerate.quality') }}</label>
-            <Select v-model="selectedQuality" :options="qualityOptions" :disabled="generating" />
+            <Select v-model="selectedQuality" :options="qualityOptions" :disabled="submitting" />
           </div>
           <div>
             <label class="field-label">{{ t('imageGenerate.count') }}</label>
-            <Select v-model="selectedCount" :options="countOptions" :disabled="generating" />
+            <Select v-model="selectedCount" :options="countOptions" :disabled="submitting" />
           </div>
         </div>
 
@@ -48,14 +48,14 @@
         </div>
 
         <div class="actions-row">
-          <button class="secondary-button" type="button" :disabled="generating || !prompt.trim()" @click="optimizePrompt">
+          <button class="secondary-button" type="button" :disabled="submitting || !prompt.trim()" @click="optimizePrompt">
             <Icon name="edit" size="sm" :stroke-width="2" />
             <span>{{ t('imageGenerate.optimizePrompt') }}</span>
           </button>
           <button class="primary-button" type="button" :disabled="!canGenerate" @click="generate">
-            <Icon v-if="!generating" name="sparkles" size="sm" :stroke-width="2" />
+            <Icon v-if="!submitting" name="sparkles" size="sm" :stroke-width="2" />
             <span v-else class="spinner"></span>
-            <span>{{ generating ? t('imageGenerate.generating') : t('imageGenerate.generateNow') }}</span>
+            <span>{{ submitting ? t('imageGenerate.submitting') : t('imageGenerate.generateNow') }}</span>
           </button>
         </div>
       </section>
@@ -68,17 +68,25 @@
           </button>
         </div>
 
-        <div v-if="generating" class="empty-state">
-          <span class="spinner large"></span>
-          <p>{{ t('imageGenerate.waiting') }}</p>
+        <div v-if="activeJobs.length" class="job-list">
+          <article v-for="job in activeJobs" :key="job.id" class="job-item">
+            <span class="spinner large"></span>
+            <div class="min-w-0 flex-1">
+              <div class="job-title-row">
+                <p>{{ job.prompt }}</p>
+                <span>{{ job.status === 'pending' ? t('imageGenerate.queued') : t('imageGenerate.running') }}</span>
+              </div>
+              <p class="image-sub">{{ job.model }} · {{ job.size }} · {{ formatJobTime(job.created_at) }}</p>
+            </div>
+          </article>
         </div>
 
-        <div v-else-if="gallery.length === 0" class="empty-state">
+        <div v-if="gallery.length === 0 && activeJobs.length === 0" class="empty-state">
           <Icon name="grid" size="xl" class="text-gray-400" />
           <p>{{ t('imageGenerate.empty') }}</p>
         </div>
 
-        <div v-else class="gallery-grid">
+        <div v-if="gallery.length" class="gallery-grid">
           <article v-for="item in gallery" :key="item.id" class="image-card">
             <img :src="item.src" :alt="item.prompt" loading="lazy" />
             <div class="image-meta">
@@ -111,7 +119,7 @@ import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
-import { imagesAPI, type UserImageModel } from '@/api/images'
+import { imagesAPI, type ImageGenerationJob, type UserImageModel } from '@/api/images'
 import { useAppStore } from '@/stores'
 import { useAuthStore } from '@/stores/auth'
 
@@ -166,15 +174,20 @@ const selectedQuality = ref('auto')
 const selectedCount = ref(1)
 const prompt = ref('')
 const loading = ref(false)
-const generating = ref(false)
+const submitting = ref(false)
 const errorMessage = ref('')
 const gallery = ref<GalleryItem[]>([])
+const jobs = ref<ImageGenerationJob[]>([])
 const copiedId = ref('')
 let abortController: AbortController | null = null
 let copyFeedbackTimer: number | null = null
 let imageDBPromise: Promise<IDBDatabase> | null = null
 const originalBlobs = new Map<string, Blob>()
 const objectUrls = new Set<string>()
+const hydratingJobIDs = new Set<string>()
+const notifiedFailedJobIDs = new Set<string>()
+const dismissedImageIDs = new Set<string>()
+let unsubscribeImageJobs: (() => void) | null = null
 
 const PREVIEW_MAX_EDGE = 960
 const PREVIEW_QUALITY = 0.76
@@ -186,7 +199,9 @@ const ERROR_MESSAGE_MAX_LENGTH = 360
 const sizeOptions: SelectOption[] = [
   { value: '1024x1024', label: '1:1 · 1024x1024 · 方图' },
   { value: '1536x1024', label: '3:2 · 1536x1024 · 横图' },
+  { value: '1792x1024', label: '16:9 · 1792x1024 · 横图' },
   { value: '1024x1536', label: '2:3 · 1024x1536 · 竖图' },
+  { value: '1024x1792', label: '9:16 · 1024x1792 · 竖图' },
   { value: 'auto', label: 'auto · 自动' }
 ]
 
@@ -212,16 +227,26 @@ const modelPlaceholder = computed(() =>
   loading.value ? t('imageGenerate.loadingModels') : t('imageGenerate.noModels')
 )
 const canGenerate = computed(() =>
-  Boolean(prompt.value.trim() && selectedModelOption.value && !loading.value && !generating.value)
+  Boolean(prompt.value.trim() && selectedModelOption.value && !loading.value && !submitting.value)
+)
+const activeJobs = computed(() =>
+  jobs.value.filter((job) => job.status === 'pending' || job.status === 'running')
 )
 
-onMounted(() => {
-  void loadGallery()
-  void loadData()
+onMounted(async () => {
+  loadDismissedImageIDs()
+  await loadGallery()
+  await Promise.all([loadData(), loadImageJobs()])
+  unsubscribeImageJobs = imagesAPI.subscribeImageJobs({
+    onSnapshot: handleJobSnapshot,
+    onJob: handleJobUpdate
+  })
 })
 
 onBeforeUnmount(() => {
   abortController?.abort()
+  unsubscribeImageJobs?.()
+  unsubscribeImageJobs = null
   if (copyFeedbackTimer !== null) {
     window.clearTimeout(copyFeedbackTimer)
   }
@@ -293,11 +318,11 @@ async function generate() {
 
   abortController?.abort()
   abortController = new AbortController()
-  generating.value = true
+  submitting.value = true
   errorMessage.value = ''
 
   try {
-    const response = await imagesAPI.generateImage({
+    const job = await imagesAPI.createImageJob({
       model: option.model,
       prompt: text,
       size: String(selectedSize.value),
@@ -305,56 +330,115 @@ async function generate() {
       n: Number(selectedCount.value),
       signal: abortController.signal
     })
-
-    const generatedItems: Array<GalleryItem | null> = await Promise.all((response.data || []).map(async (item) => {
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-      const mimeType = imageMimeType(item.output_format)
-      const originalBlob = await generatedImageBlob(item, mimeType)
-      if (!originalBlob) return null
-
-      const previewBlob = await createPreviewBlob(originalBlob)
-      originalBlobs.set(id, originalBlob)
-      await saveImageRecord({
-        id,
-        original: originalBlob,
-        preview: previewBlob,
-        mimeType: originalBlob.type || mimeType
-      })
-
-      return {
-        id,
-        src: objectUrlForBlob(previewBlob),
-        originalUrl: objectUrlForBlob(originalBlob),
-        prompt: text,
-        revisedPrompt: item.revised_prompt,
-        model: option.model,
-        size: String(selectedSize.value),
-        quality: String(selectedQuality.value),
-        mimeType: originalBlob.type || mimeType,
-        createdAt: new Date().toLocaleString()
-      }
-    }))
-    const items = generatedItems.filter((item): item is GalleryItem => item !== null)
-
-    if (items.length === 0) {
-      throw new Error(t('imageGenerate.emptyResponse'))
-    }
-
-    const nextGallery = [...items, ...gallery.value]
-    for (const droppedItem of nextGallery.slice(24)) {
-      revokeGalleryItemUrls(droppedItem)
-      originalBlobs.delete(droppedItem.id)
-    }
-    gallery.value = nextGallery.slice(0, 24)
-    appStore.showSuccess(t('imageGenerate.generateSuccess', { count: items.length }))
+    upsertJob(job)
+    appStore.showSuccess(t('imageGenerate.jobAccepted'))
   } catch (error) {
     if ((error as { name?: string })?.name === 'AbortError') return
     errorMessage.value = imageGenerationErrorMessage(error, t('imageGenerate.generateFailed'))
     appStore.showError(errorMessage.value)
   } finally {
-    generating.value = false
+    submitting.value = false
     abortController = null
   }
+}
+
+async function loadImageJobs() {
+  try {
+    handleJobSnapshot(await imagesAPI.listImageJobs())
+  } catch (error) {
+    errorMessage.value = imageGenerationErrorMessage(error, t('imageGenerate.loadJobsFailed'))
+  }
+}
+
+function handleJobSnapshot(nextJobs: ImageGenerationJob[]) {
+  jobs.value = nextJobs.slice().sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+  for (const job of jobs.value) {
+    if (job.status === 'succeeded') void hydrateCompletedJob(job)
+  }
+}
+
+function handleJobUpdate(job: ImageGenerationJob) {
+  upsertJob(job)
+  void handleTerminalJob(job)
+}
+
+function upsertJob(job: ImageGenerationJob) {
+  const index = jobs.value.findIndex((item) => item.id === job.id)
+  if (index >= 0) {
+    jobs.value.splice(index, 1, job)
+  } else {
+    jobs.value.unshift(job)
+  }
+  jobs.value.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+  if (jobs.value.length > 24) jobs.value.splice(24)
+}
+
+async function handleTerminalJob(job: ImageGenerationJob) {
+  if (job.status === 'failed') {
+    if (notifiedFailedJobIDs.has(job.id)) return
+    notifiedFailedJobIDs.add(job.id)
+    const message = cleanImageGenerationErrorMessage(job.error_message || '', t('imageGenerate.generateFailed'))
+    errorMessage.value = message
+    appStore.showError(message)
+    return
+  }
+  if (job.status !== 'succeeded' || hydratingJobIDs.has(job.id)) return
+  await hydrateCompletedJob(job)
+}
+
+async function hydrateCompletedJob(job: ImageGenerationJob) {
+  const missingResults = job.results.filter((result) => {
+    const id = jobImageID(job.id, result.index)
+    return !dismissedImageIDs.has(id) && !gallery.value.some((item) => item.id === id)
+  })
+  if (missingResults.length === 0) return
+
+  hydratingJobIDs.add(job.id)
+  try {
+    const items: GalleryItem[] = []
+    for (const result of missingResults) {
+      const id = jobImageID(job.id, result.index)
+      const originalBlob = await imagesAPI.fetchImageJobResult(result)
+      const mimeType = originalBlob.type || result.mime_type || 'image/png'
+      const previewBlob = await createPreviewBlob(originalBlob)
+      originalBlobs.set(id, originalBlob)
+      await saveImageRecord({ id, original: originalBlob, preview: previewBlob, mimeType })
+      items.push({
+        id,
+        src: objectUrlForBlob(previewBlob),
+        originalUrl: objectUrlForBlob(originalBlob),
+        prompt: job.prompt,
+        revisedPrompt: result.revised_prompt,
+        model: job.model,
+        size: job.size,
+        quality: job.quality,
+        mimeType,
+        createdAt: formatJobTime(job.finished_at || job.created_at)
+      })
+    }
+    if (items.length > 0) {
+      const nextGallery = [...items, ...gallery.value]
+      for (const droppedItem of nextGallery.slice(24)) {
+        revokeGalleryItemUrls(droppedItem)
+        originalBlobs.delete(droppedItem.id)
+      }
+      gallery.value = nextGallery.slice(0, 24)
+      appStore.showSuccess(t('imageGenerate.generateSuccess', { count: items.length }))
+    }
+  } catch (error) {
+    errorMessage.value = imageGenerationErrorMessage(error, t('imageGenerate.resultLoadFailed'))
+  } finally {
+    hydratingJobIDs.delete(job.id)
+  }
+}
+
+function jobImageID(jobID: string, index: number): string {
+  return `${jobID}:${index}`
+}
+
+function formatJobTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
 async function copyImage(item: GalleryItem) {
@@ -399,6 +483,8 @@ async function downloadImage(item: GalleryItem) {
 }
 
 async function deleteGalleryItem(item: GalleryItem) {
+  dismissedImageIDs.add(item.id)
+  persistDismissedImageIDs()
   gallery.value = gallery.value.filter((entry) => entry.id !== item.id)
   revokeGalleryItemUrls(item)
   originalBlobs.delete(item.id)
@@ -411,18 +497,6 @@ async function imageBlob(src: string): Promise<Blob> {
   }
   const response = await fetch(src)
   return response.blob()
-}
-
-async function generatedImageBlob(
-  item: { b64_json?: string; url?: string; download_url?: string },
-  fallbackMimeType: string
-): Promise<Blob | null> {
-  if (item.b64_json) {
-    return base64ToBlob(item.b64_json, fallbackMimeType)
-  }
-  const src = item.download_url || item.url
-  if (!src) return null
-  return imageBlob(src)
 }
 
 function base64ToBlob(base64: string, mimeType: string): Blob {
@@ -507,19 +581,6 @@ function revokeGalleryItemUrls(item: GalleryItem) {
   }
 }
 
-function imageMimeType(format?: string): string {
-  switch (String(format || '').trim().toLowerCase()) {
-    case 'jpg':
-    case 'jpeg':
-      return 'image/jpeg'
-    case 'webp':
-      return 'image/webp'
-    case 'png':
-    default:
-      return 'image/png'
-  }
-}
-
 function fileExtension(mimeType: string): string {
   switch (mimeType.toLowerCase()) {
     case 'image/jpeg':
@@ -533,7 +594,10 @@ function fileExtension(mimeType: string): string {
 }
 
 function safeFileName(value: string): string {
-  return String(value || 'image').replace(/[<>:"/\\|?*\u0000-\u001F]/g, '-').slice(0, 80) || 'image'
+  const sanitized = Array.from(String(value || 'image'), (character) =>
+    character.charCodeAt(0) <= 31 || '<>:"/\\|?*'.includes(character) ? '-' : character
+  ).join('')
+  return sanitized.slice(0, 80) || 'image'
 }
 
 function showCopied(id: string) {
@@ -550,6 +614,31 @@ function showCopied(id: string) {
 function galleryStorageKey(): string {
   const userID = authStore.user?.id ?? 'anonymous'
   return `image_generation_gallery_v1:${userID}`
+}
+
+function dismissedImagesStorageKey(): string {
+  const userID = authStore.user?.id ?? 'anonymous'
+  return `image_generation_dismissed_v1:${userID}`
+}
+
+function loadDismissedImageIDs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(dismissedImagesStorageKey()) || '[]')
+    if (!Array.isArray(parsed)) return
+    for (const id of parsed) {
+      if (typeof id === 'string' && id) dismissedImageIDs.add(id)
+    }
+  } catch {
+    // Dismissal history is optional.
+  }
+}
+
+function persistDismissedImageIDs() {
+  try {
+    localStorage.setItem(dismissedImagesStorageKey(), JSON.stringify(Array.from(dismissedImageIDs).slice(-200)))
+  } catch {
+    // Dismissal history is optional.
+  }
 }
 
 async function loadGallery() {
@@ -633,6 +722,8 @@ async function restoreGalleryItem(item: StoredGalleryItem): Promise<GalleryItem 
 }
 
 async function clearGallery() {
+  for (const item of gallery.value) dismissedImageIDs.add(item.id)
+  persistDismissedImageIDs()
   gallery.value = []
   originalBlobs.clear()
   revokeAllObjectUrls()
@@ -857,6 +948,30 @@ function isImageToolMetaErrorMessage(message: string): boolean {
 
 .empty-state {
   @apply flex min-h-[220px] flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-slate-300 bg-white text-sm text-slate-500;
+}
+
+.job-list {
+  @apply mb-4 space-y-2;
+}
+
+.job-item {
+  @apply flex min-h-[76px] items-center gap-4 rounded-lg border border-primary-200 bg-white px-4 py-3 shadow-sm;
+}
+
+.job-item .spinner.large {
+  @apply h-6 w-6 shrink-0;
+}
+
+.job-title-row {
+  @apply flex items-start justify-between gap-3;
+}
+
+.job-title-row p {
+  @apply truncate text-sm font-medium text-slate-900;
+}
+
+.job-title-row span {
+  @apply shrink-0 text-xs font-semibold text-primary-600;
 }
 
 .gallery-grid {
